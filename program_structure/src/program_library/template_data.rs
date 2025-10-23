@@ -19,6 +19,7 @@ pub struct TemplateData {
     is_parallel: bool,
     is_custom_gate: bool,
     is_extern_c: bool,
+    is_autocomplete: bool,
     /* Only used to know the order in which signals are declared.*/
     input_declarations: WireDeclarationOrder,
     output_declarations: WireDeclarationOrder,
@@ -35,7 +36,8 @@ impl TemplateData {
         elem_id: &mut usize,
         is_parallel: bool,
         is_custom_gate: bool,
-        is_extern_c: bool
+        is_extern_c: bool,
+        is_autocomplete: bool,
     ) -> TemplateData {
         body.fill(file_id, elem_id);
         let mut input_wires = WireInfo::new();
@@ -56,7 +58,8 @@ impl TemplateData {
             is_custom_gate,
             is_extern_c,
             input_declarations,
-            output_declarations
+            output_declarations,
+            is_autocomplete
         }
     }
 
@@ -72,6 +75,7 @@ impl TemplateData {
         is_parallel: bool,
         is_custom_gate: bool,
         is_extern_c: bool,
+        is_autocomplete: bool,
         input_declarations: WireDeclarationOrder,
         output_declarations: WireDeclarationOrder
     ) -> TemplateData {
@@ -88,7 +92,8 @@ impl TemplateData {
             is_custom_gate,
             is_extern_c,
             input_declarations,
-            output_declarations
+            output_declarations,
+            is_autocomplete
         }
     }
     pub fn get_file_id(&self) -> FileID {

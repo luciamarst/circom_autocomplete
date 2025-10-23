@@ -147,7 +147,8 @@ pub enum Definition {
         body: Statement,
         parallel: bool,
         is_custom_gate: bool,
-        is_extern_c: bool
+        is_extern_c: bool,
+        is_autocomplete: bool,
     },
     Function {
         meta: Meta,
@@ -172,9 +173,10 @@ pub fn build_template(
     body: Statement,
     parallel: bool,
     is_custom_gate: bool,
-    is_extern_c: bool
+    is_extern_c: bool,
+    is_autocomplete: bool,
 ) -> Definition {
-    Definition::Template { meta, name, args, arg_location, body, parallel, is_custom_gate, is_extern_c }
+    Definition::Template { meta, name, args, arg_location, body, parallel, is_custom_gate, is_extern_c, is_autocomplete }
 }
 
 pub fn build_function(

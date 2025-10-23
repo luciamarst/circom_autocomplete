@@ -24,7 +24,7 @@ use program_structure::constants::UsefulConstants;
 use program_structure::bus_data::BusData;
 use super::execution_data::analysis::Analysis;
 use super::execution_data::{ExecutedBus, ExecutedProgram, ExecutedTemplate, PreExecutedTemplate, NodePointer};
-use super::execution_data::type_definitions::{AccessingInformationBus, AccessingInformation, TagNames, TagWire};
+use super::execution_data::type_definitions::{Constraint,AccessingInformationBus, AccessingInformation, TagNames, TagWire};
 
 use super::{
     ast::*, ArithmeticError, FileID, ProgramArchive, Report, ReportCode, ReportCollection
@@ -54,6 +54,10 @@ struct RuntimeInformation {
     pub environment: ExecutionEnvironment,
     pub exec_program: ExecutedProgram,
     pub anonymous_components: AnonymousComponentsInfo,
+    // TODO:
+    // Nuevos campos para el autocomplete
+    pub is_autocomplete: bool, // si se debe aplicar o no el traducir las <-- por constraints
+    pub new_added_vars: usize, // el número de variable nuevo que podemos introducir (para evitar colisiones)
 }
 impl RuntimeInformation {
     pub fn new(current_file: FileID, id_max: usize, prime: &String) -> RuntimeInformation {
@@ -70,10 +74,14 @@ impl RuntimeInformation {
             anonymous_components: AnonymousComponentsInfo::new(),
             conditions_state: Vec::new(),
             unknown_counter: 0,
+            is_autocomplete: false,
+            new_added_vars: 0
         }
     }
 }
 
+// TODO: esto es lo que se devuelve al ejecutar una expresión. Antes solo nos devolvía el resultado de la expresión,
+// ahora también devolvemos las nuevas constraints a añadir y las nuevas variables
 struct FoldedValue {
     pub arithmetic_slice: Option<AExpressionSlice>,
     pub bus_slice: Option<(String, BusSlice)>, // stores the name of the bus and the value
@@ -81,6 +89,9 @@ struct FoldedValue {
     pub bus_node_pointer: Option<NodePointer>,
     pub is_parallel: Option<bool>,
     pub tags: Option<TagWire>,
+    // TODO: nuevos campos añadidos para las constraints y señales añadidas en autocomplete
+    pub new_constraints: Option<Vec<Constraint>>,
+    pub new_signals: Option<Vec<String>>,
 }
 impl FoldedValue {
     pub fn valid_arithmetic_slice(f_value: &FoldedValue) -> bool {
@@ -103,6 +114,9 @@ impl FoldedValue {
             f_value.is_parallel.is_none() && f_value.arithmetic_slice.is_none()
             && f_value.bus_slice.is_none()
     }
+    pub fn valid_autocomplete_info(f_value: &FoldedValue) -> bool{
+        f_value.new_constraints.is_some() && f_value.new_signals.is_some()
+    }
 }
 
 impl Default for FoldedValue {
@@ -114,6 +128,8 @@ impl Default for FoldedValue {
             bus_node_pointer: Option::None,
             is_parallel: Option::None, 
             tags: Option::None,
+            new_constraints: Option::None,
+            new_signals: Option::None
         }
     }
 }
@@ -361,6 +377,8 @@ fn execute_statement(
                 };
             
             
+            // TODO: 
+            // execute expression nos tiene que devolver la expresión del resultado, así como las constraints y señales nuevas que se hayan añadido
             
             let r_folded = execute_expression(rhe, program_archive, runtime, flags)?;
             
@@ -386,6 +404,13 @@ fn execute_statement(
 
 
             if let Option::Some(node) = actual_node {
+
+                // TODO:
+                // Si estamos en modo autocomplete:
+                // ---> Si se ha usado el --> entonces lo que hacemos es añadir las constraints nuevas al template, añadir las nuevas señales y meter el possible contraint que nos ha devuelto el perform_assign
+                // Para las variables!!! Ojo este  caso, pensarlo mejor -> meter las constraints nuevas al template y añadir las nuevas señales?
+                // No debería aparecer nunca el ===, si pasa eso es un error
+
                 if *op == AssignOp::AssignConstraintSignal || (*op == AssignOp::AssignSignal && flags.inspect){
                     debug_assert!(possible_constraint.is_some());
                     
@@ -481,6 +506,9 @@ fn execute_statement(
             Option::None
         }
         ConstraintEquality { meta, lhe, rhe, .. } => {
+
+            // TODO: No debería aparecer en el autocomplete, no preocuparnos por ello
+
             debug_assert!(actual_node.is_some());
 
             if runtime.block_type == BlockType::Unknown{
@@ -731,6 +759,9 @@ fn execute_statement(
             Option::None
         }
         Assert { arg, meta, .. } => {
+
+            // TODO: deberiamos meterlo si estamos como autocomplete como un ===?
+
             let f_result = execute_expression(arg, program_archive, runtime, flags)?;
             let arith = safe_unwrap_to_single_arithmetic_expression(f_result, line!());
             let possible_bool = AExpr::get_boolean_equivalence(&arith, runtime.constants.get_p());
@@ -2641,6 +2672,7 @@ fn execute_variable(
     runtime: &mut RuntimeInformation,
     flags: FlagsExecution
 ) -> Result<FoldedValue, ()> {
+    // TODO: Caso vars, mirar en el futuro, ojo con los indexados
     let access_information = treat_accessing(meta, access, program_archive, runtime, flags)?;
     if access_information.undefined {
         let arithmetic_slice = Option::Some(AExpressionSlice::new(&AExpr::NonQuadratic));
@@ -2680,6 +2712,7 @@ fn execute_signal(
 ) -> Result<FoldedValue, ()> {
     let access_information = treat_accessing(meta, access, program_archive, runtime, flags)?;
     if access_information.undefined {
+        // TODO: caso de acceso a posición que depende de señal, prepararlo para cuando metamos los accesos indexados
         let arithmetic_slice = Option::Some(AExpressionSlice::new(&AExpr::NonQuadratic));
         return Result::Ok(FoldedValue { arithmetic_slice, ..FoldedValue::default() });
     }
@@ -3425,6 +3458,8 @@ fn execute_bus_call(
     Result::Ok(FoldedValue { bus_node_pointer: Option::Some(node_pointer), ..FoldedValue::default() })
 }
 
+// TODO: esto es lo que debemos hacer para que nos meta las constraints necesarias y meta las señales. Debemos usar lo que tenemos en nuestras reglas
+// Por ejemplo para Mul meter lo que tenemos de {aux === op1 * op2} y devolver como AExpr el valor de Result
 fn execute_infix_op(
     meta: &Meta,
     infix: ExpressionInfixOpcode,
@@ -3464,6 +3499,8 @@ fn execute_infix_op(
     )
 }
 
+// TODO: esto es lo que debemos hacer para que nos meta las constraints necesarias y meta las señales. Debemos usar lo que tenemos en nuestras reglas
+// Por ejemplo para Mul meter lo que tenemos de {aux === op1 * op2} y devolver como AExpr el valor de Result
 fn execute_prefix_op(
     prefix_op: ExpressionPrefixOpcode,
     value: &AExpr,
