@@ -1059,11 +1059,32 @@ fn execute_expression(
         InfixOp { meta, lhe, infix_op, rhe, .. } => {
             let l_fold = execute_expression(lhe, program_archive, runtime, flags)?;
             let r_fold = execute_expression(rhe, program_archive, runtime, flags)?;
+                    //TODO: FATAL        
+                let l_constraints: Vec<_> = l_fold.new_constraints.clone().unwrap(); 
+                let l_signals= l_fold.new_signals.clone().unwrap();
+
+                let r_constraints= r_fold.new_constraints.clone().unwrap();
+                let r_signals= r_fold.new_signals.clone().unwrap();
             let l_value = safe_unwrap_to_single_arithmetic_expression(l_fold, line!());
             let r_value = safe_unwrap_to_single_arithmetic_expression(r_fold, line!());
-            let r_value = execute_infix_op(meta, *infix_op, &l_value, &r_value, runtime)?;
+            if runtime.is_autocomplete{
+
+                let (result_value, result_constraints, result_signals) = execute_infix_op_autocomplete(
+                    meta,
+                    *infix_op,
+                    &l_value, 
+                    &r_value, 
+                    runtime
+                )?;
+
+            } else{
+                let r_value = execute_infix_op(meta, *infix_op, &l_value, &r_value, runtime)?;
+            }
             let r_slice = AExpressionSlice::new(&r_value);
-            FoldedValue { arithmetic_slice: Option::Some(r_slice), ..FoldedValue::default() }
+            FoldedValue { 
+                arithmetic_slice: Option::Some(r_slice), 
+                ..FoldedValue::default() 
+            }
         }
         PrefixOp { prefix_op, rhe, .. } => {
             let folded_value = execute_expression(rhe, program_archive, runtime, flags)?;
@@ -3490,6 +3511,42 @@ fn execute_infix_op(
         BitOr => Result::Ok(AExpr::bit_or(l_value, r_value, field)),
         BitAnd => Result::Ok(AExpr::bit_and(l_value, r_value, field)),
         BitXor => Result::Ok(AExpr::bit_xor(l_value, r_value, field)),
+    };
+    treat_result_with_arithmetic_error(
+        possible_result,
+        meta,
+        &mut runtime.runtime_errors,
+        &runtime.call_trace,
+    )
+}
+
+
+fn execute_infix_op_autocomplete(
+    meta: &Meta,
+    infix: ExpressionInfixOpcode,
+    l_value: &AExpr,
+    r_value: &AExpr,
+    runtime: &mut RuntimeInformation,
+) -> Result<(AExpr,Vec<Constraint>, Vec<String>), ()> {
+    use ExpressionInfixOpcode::*;
+    let field = runtime.constants.get_p();
+    let possible_result = match infix {
+        Mul =>{
+            // New constraint =>  l_value * r_value - newaux === 0
+            let res_mul = AExpr::mul(l_value, r_value, field);
+            let new_signal = format!("newaux_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let expr_signal = AExpr::Signal{symbol: new_signal};
+            let expr_new_constraint = AExpr::sub(&res_mul, &expr_signal, field);
+            // El transform lo que hace es igualar la expresion a 0
+            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field);
+            Ok((
+                expr_signal,
+                vec![new_constraint],
+                vec![new_signal]
+            ))
+        }
+        _ => unreachable!()
     };
     treat_result_with_arithmetic_error(
         possible_result,
