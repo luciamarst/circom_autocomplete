@@ -3536,10 +3536,11 @@ fn execute_infix_op_autocomplete(
             let res_mul = AExpr::mul(l_value, r_value, field);
             let new_signal = format!("newaux_{}", runtime.new_added_vars);
             runtime.new_added_vars += 1;
-            let expr_signal = AExpr::Signal{symbol: new_signal};
+            let expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
             let expr_new_constraint = AExpr::sub(&res_mul, &expr_signal, field);
             // El transform lo que hace es igualar la expresion a 0
-            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field);
+            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
+
             Ok((
                 expr_signal,
                 vec![new_constraint],
