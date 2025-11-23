@@ -4178,12 +4178,14 @@ fn execute_infix_op_autocomplete(
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
 
+            let one = AExpr::Number { value: BigInt::from(1) };
             let output = AExpr::sub(l_value, r_value, field);
-            let c_out = AExpr::transform_expression_to_constraint_form(output.clone(), field).expect("Eq constraint failed");
+            let inverse = AExpr::sub(&one, &output, field);
+            let c_out = AExpr::transform_expression_to_constraint_form(inverse.clone(), field).expect("Not Eq constraint failed");
             constraints.push(c_out);
 
             Ok((
-                output,
+                inverse,
                 constraints,
                 new_vars_name
             ))
