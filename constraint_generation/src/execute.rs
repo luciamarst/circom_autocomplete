@@ -3548,21 +3548,26 @@ fn execute_infix_op_autocomplete(
             ))
         }
         Div =>{
-            // New constraint => l_value = r_value * q - r = 0
-            //cambiar el mul por div
-            let res_div = AExpr::mul(l_value, r_value, field);
-            let new_signal = format!("newaux_{}", runtime.new_added_vars);
+            // Operation => q_aux = l_value / r_value | New COnstraint => l_value - (r_value + q_aux) = 0
+           
+            // q_aux declaration
+            let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
             runtime.new_added_vars += 1;
+            let q_aux = AExpr::Signal { symbol: q_aux_name.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
             
-            let expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
-            let expr_new_constraint = AExpr::sub(&res_div, &expr_signal, field);
+            // Construction of _value * q_aux operation
+            let a = AExpr::mul(r_value, &q_aux, field); // a' = b' + q'
+
+            // Construction of new constraint: l_value - (a); a = r_value * q_aux
+            let expr_new_constraint = AExpr::sub(l_value, &a, field);
+
             // El transform lo que hace es igualar la expresion a 0
             let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
 
             Ok((
-                expr_signal,
+                q_aux,
                 vec![new_constraint],
-                vec![new_signal]
+                vec![q_aux_name]
             ))
 
         }
@@ -3603,6 +3608,26 @@ fn execute_infix_op_autocomplete(
                 vec![new_signal]
             ))
         }
+        Pow => {
+            // New constraint => l_value = product {0...r_value} (l_value)  - newaux = 0
+            let res_div = AExpr::pow(l_value, r_value, field); // l_value^(r_value)
+            let new_signal = format!("newaux_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            
+            let expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
+            let expr_new_constraint = AExpr::sub(&res_div, &expr_signal, field);
+            // El transform lo que hace es igualar la expresion a 0
+            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
+
+            Ok((
+                expr_signal,
+                vec![new_constraint],
+                vec![new_signal]
+            ))
+        }
+        // IntDiv =>{
+        //     // New constraint => 
+        // }
         _ => unreachable!()
     };
     treat_result_with_arithmetic_error(
