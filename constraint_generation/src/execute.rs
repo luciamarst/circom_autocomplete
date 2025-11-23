@@ -3521,12 +3521,37 @@ fn execute_infix_op(
 }
 
 
+// ----------------------------
+// intern methods in this module
+// ----------------------------
+/* This function is necessary because r_value is an AExpr::Number, but could be any AExpr variant such as Signal, Add, etc.
+   For ShiftL, we only accept a literal number
+   Then, we have to extract the value if r_value is an AExpr::Number and convert it from BigInt to usize (to_usize() function)
+   If r_value is not a number, the shift cannot be perfomed
+
+   Notes: 
+    1) BigInt can't be used directly like index. For used the value of that BigInt it must be converted to usize (to_usize() function). Otherwiae it would give an error
+
+*/
+use num_traits::ToPrimitive;
+fn get_constant_usize(expr: &AExpr) -> Option<usize> {
+    match expr {
+        AExpr::Number { value } => value.to_usize(),
+        _ => None,
+    }
+}
+
+// ----------------------------
+// operator for autocompelte function
+// ----------------------------
+const MAX_BITS: usize = 253;
 fn execute_infix_op_autocomplete(
     meta: &Meta,
     infix: ExpressionInfixOpcode,
     l_value: &AExpr,
     r_value: &AExpr,
     runtime: &mut RuntimeInformation,
+    
 ) -> Result<(AExpr,Vec<Constraint>, Vec<String>), ()> {
     use ExpressionInfixOpcode::*;
     let field = runtime.constants.get_p();
@@ -3686,6 +3711,105 @@ fn execute_infix_op_autocomplete(
                 vec![q_aux_name, r_aux_name]
             ))
         }
+        ShiftL =>{
+            // Operation: decimal_number << displacement 
+            // N is the number of bits of the decimal_number transformed to binary
+
+            let N = MAX_BITS; // total bits number, 
+            let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
+
+            assert!(k <= N, "Shift exceeds bit width");
+            
+            let mut constraints = vec![];
+            let mut new_vars_name = vec![];
+
+            let mut b_signals = vec![];
+
+            // ================================= Convert number to bits =================================
+            // Creating b signals (b0,b1,b2, ..., b_{N-1})
+            for _ in 0..N{
+                let b_aux_name = format!("b_{}", runtime.new_added_vars);
+                runtime.new_added_vars+=1;
+                b_signals.push(AExpr::Signal { symbol: (b_aux_name).clone() });
+                new_vars_name.push(b_aux_name);
+            } 
+
+            // Force that b_i will be bits. (b_i * (1-b_i) = 0)
+            for bi in &b_signals{
+                let bit = AExpr::Number { value: BigInt::from(1) }; // 
+
+
+                let term = AExpr::mul(
+                    &bi,
+                    &AExpr::sub(&bit,&bi,field),
+                    field
+                );
+
+                let constraint = AExpr::transform_expression_to_constraint_form(term, field).expect("bit constraint filed");
+                constraints.push(constraint);
+
+            }
+
+            // Calcule decimal number to verify that the decimal-to-bit conversion is correct.
+            // TO verify it, Σ b_i * 2^i 
+            let mut sum_expr = AExpr::Number{value: BigInt::from(0)};
+
+            for i in 0..N{
+                let power_of_two = BigInt::from(1) <<i; 
+                let sum = AExpr::mul(&b_signals[i], &AExpr::Number{value: BigInt::from(power_of_two)}, field);
+                sum_expr = AExpr::add(&sum_expr, &sum, field);
+            }
+
+            let reconstruct = AExpr::sub(l_value, &sum_expr, field);
+            let constraint = AExpr::transform_expression_to_constraint_form(reconstruct, field).expect("reconstruct failed"); 
+            constraints.push(constraint);
+            
+
+            // ================================= Shift Left =================================
+            // Creation of shift signals
+            let mut s_signals = vec![];
+
+            for _ in 0..N{
+                let shift_signal_name = format!("s_{}", runtime.new_added_vars);
+                runtime.new_added_vars+=1;
+                s_signals.push(AExpr::Signal { symbol: (shift_signal_name).clone() });
+                new_vars_name.push(shift_signal_name);
+            }
+            
+            // Fill in the displaced part
+            for i in 0..(N-k){
+                let eq = AExpr::sub(&s_signals[i], &b_signals[i+k], field);
+                let c = AExpr::transform_expression_to_constraint_form(eq, field).unwrap();
+                constraints.push(c);
+            }
+
+            // Fill the remaining (least significant) part with shifted zeros
+            for i in (N-k)..N{
+                let eq = AExpr::sub(&s_signals[i], &AExpr::Number{value: BigInt::from(0)},field);
+                let c = AExpr::transform_expression_to_constraint_form(eq, field).unwrap();
+                constraints.push(c);
+            }
+
+            // Convert the shifted value to decimal
+            // TO verify it, Σ s_i * 2^i 
+            let mut sum_out = AExpr::Number{value: BigInt::from(0)};
+
+            for i in 0..N{
+                let power_of_two = BigInt::from(1) <<i; 
+                let sum = AExpr::mul(&s_signals[i], &AExpr::Number{value: BigInt::from(power_of_two)}, field);
+                sum_out = AExpr::add(&sum_out, &sum, field);
+            }
+
+            Ok((
+                sum_out,
+                constraints,
+                new_vars_name
+            ))
+
+        }
+        // ShiftR =>{
+
+        // }
         _ => unreachable!()
     };
     treat_result_with_arithmetic_error(

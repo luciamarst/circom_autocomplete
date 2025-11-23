@@ -111,13 +111,17 @@ pub fn complement(elem: &BigInt, field: &BigInt) -> BigInt {
 pub fn shift_l(left: &BigInt, right: &BigInt, field: &BigInt) -> Result<BigInt, ArithmeticError> {
     let two = BigInt::from(2);
     let top = field / &two;
+
+    //If right < top (field/2), that is, the number of bits that will be shifted is less than de middle of field, then
     if right <= &top {
         let usize_repr = right
             .to_usize()
-            .map_or(Result::Err(ArithmeticError::DivisionByZero), |a| Result::Ok(a))?;
+            .map_or(Result::Err(ArithmeticError::DivisionByZero), |a| Result::Ok(a))?; //The mask is necessary because the left shift could cause an overflow. The mask adjusts to the allowed bits in the field size, thus erasing the overflow bits.
         let value = modulus(&((left * &num_traits::pow(two, usize_repr)) & &mask(field)), field);
         Result::Ok(value)
-    } else {
+    } else { // If number of bits that will be displaced are euqal or greater than the middle of field, a trick is used
+        // This is done because when the bits that need to be shifted are greater than half the finite field
+        // it's better to shift the excess bits to the RIGHT, that is, (field - right)
         shift_r(left, &(field - right), field)
     }
 }
