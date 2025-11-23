@@ -3758,7 +3758,67 @@ fn execute_infix_op_autocomplete(
             ))
         }
         ShiftL =>{
-            // Operation: decimal_number << displacement 
+            let N = MAX_BITS; // total bits number
+            let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
+            assert!(k <= N, "Shift exceeds bit width");
+
+            let mut constraints = vec![];
+            let mut new_vars_name = vec![];
+            let mut b_signals: Vec<AExpr> = vec![];
+
+            // ================================= Convert number to bits =================================
+            let (field_copy, l_value) = {
+                // Scope 
+                let field_copy = runtime.constants.get_p().clone(); 
+                let l_value = l_value.clone();                       
+                (field_copy, l_value)
+            }; 
+
+            // Now mutable borrow from runtime is safe
+            let (b_signals, constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            constraints.extend(constraints_bit);
+
+            // ================================= Shift Left =================================
+            // Creation of shift signals
+            let mut s_signals = vec![];
+
+            for _ in 0..N {
+                let shift_signal_name = format!("s_{}", runtime.new_added_vars);
+                runtime.new_added_vars += 1;
+                s_signals.push(AExpr::Signal { symbol: shift_signal_name.clone() });
+                new_vars_name.push(shift_signal_name);
+            }
+
+            // Fill in the displaced part
+            for i in 0..(N - k) {
+                let eq = AExpr::sub(&s_signals[i], &b_signals[i + k], &field_copy);
+                let c = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
+                constraints.push(c);
+            }
+
+            // Fill the remaining (least significant) part with shifted zeros
+            for i in (N - k)..N {
+                let eq = AExpr::sub(&s_signals[i], &AExpr::Number { value: BigInt::from(0) }, &field_copy);
+                let c = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
+                constraints.push(c);
+            }
+
+            // Convert the shifted value to decimal
+            let mut sum_out = AExpr::Number { value: BigInt::from(0) };
+            for i in 0..N {
+                let power_of_two = BigInt::from(1) << i;
+                let sum = AExpr::mul(&s_signals[i], &AExpr::Number { value: power_of_two }, &field_copy);
+                sum_out = AExpr::add(&sum_out, &sum, &field_copy);
+            }
+
+            Ok((
+                sum_out, 
+                constraints, 
+                new_vars_name
+            ))
+        }
+        ShiftR =>{
+            // Operation: decimal_number >> displacement 
             // N is the number of bits of the decimal_number transformed to binary
 
             let N = MAX_BITS; // total bits number, 
@@ -3768,12 +3828,21 @@ fn execute_infix_op_autocomplete(
             
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
-            
-            let mut b_signals = vec![];
+
+            let mut b_signals: Vec<AExpr> = vec![]; // It is necessary to specify the vector type because we will use it in the decimal_to_bits() function and it needs an array of that type
+
 
             // ================================= Convert number to bits =================================
-            let (b_signals, mut constraint_bit) = decimal_to_bits(l_value, N,field,runtime, new_vars_name);
-            constraints.extend(constraint_bit);
+             let (field_copy, l_value) = {
+                // Scope 
+                let field_copy = runtime.constants.get_p().clone(); 
+                let l_value = l_value.clone();                       
+                (field_copy, l_value)
+            };          
+
+            // Now mutable borrow from runtime is safe
+            let (b_signals, constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            constraints.extend(constraints_bit);
 
             // ================================= Shift Left =================================
             // Creation of shift signals
@@ -3786,17 +3855,17 @@ fn execute_infix_op_autocomplete(
                 new_vars_name.push(shift_signal_name);
             }
             
-            // Fill in the displaced part
-            for i in 0..(N-k){
-                let eq = AExpr::sub(&s_signals[i], &b_signals[i+k], field);
-                let c = AExpr::transform_expression_to_constraint_form(eq, field).unwrap();
+            // Fill the remaining (least significant) part with shifted zeros
+            for i in 0..k{
+                let eq = AExpr::sub(&s_signals[i], &AExpr::Number{value: BigInt::from(0)},&field_copy);
+                let c = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
                 constraints.push(c);
             }
 
-            // Fill the remaining (least significant) part with shifted zeros
-            for i in (N-k)..N{
-                let eq = AExpr::sub(&s_signals[i], &AExpr::Number{value: BigInt::from(0)},field);
-                let c = AExpr::transform_expression_to_constraint_form(eq, field).unwrap();
+            // Fill in the displaced part
+            for i in 0..(N-k){
+                let eq = AExpr::sub(&s_signals[i+k], &b_signals[i], &field_copy);
+                let c = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
                 constraints.push(c);
             }
 
@@ -3806,8 +3875,8 @@ fn execute_infix_op_autocomplete(
 
             for i in 0..N{
                 let power_of_two = BigInt::from(1) <<i; 
-                let sum = AExpr::mul(&s_signals[i], &AExpr::Number{value: BigInt::from(power_of_two)}, field);
-                sum_out = AExpr::add(&sum_out, &sum, field);
+                let sum = AExpr::mul(&s_signals[i], &AExpr::Number{value: BigInt::from(power_of_two)}, &field_copy);
+                sum_out = AExpr::add(&sum_out, &sum, &field_copy);
             }
 
             Ok((
@@ -3817,9 +3886,6 @@ fn execute_infix_op_autocomplete(
             ))
 
         }
-        // ShiftR =>{
-
-        // }
         _ => unreachable!()
     };
     treat_result_with_arithmetic_error(
