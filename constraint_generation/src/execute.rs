@@ -3541,6 +3541,52 @@ fn get_constant_usize(expr: &AExpr) -> Option<usize> {
     }
 }
 
+fn decimal_to_bits(
+    l_value: &AExpr,
+    N: usize,
+    field: &BigInt,
+    runtime: &mut RuntimeInformation,
+    new_vars_name: &mut Vec<String>
+) -> (Vec<AExpr>, Vec<Constraint>){
+    let mut b_signals = vec![];
+    let mut constraints = vec![];
+
+    // Creating b signals (b0,b1,b2, ..., b_{N-1})
+    for _ in 0..N {
+        let b_aux_name = format!("b_{}", runtime.new_added_vars);
+        runtime.new_added_vars += 1;
+        b_signals.push(AExpr::Signal { symbol: b_aux_name.clone() });
+        new_vars_name.push(b_aux_name);
+    }
+
+    // Force that b_i will be bits. (b_i * (1-b_i) = 0)
+    let one = AExpr::Number { value: BigInt::from(1) };
+    for bi in &b_signals {
+        let term = AExpr::mul(bi, &AExpr::sub(&one, bi, field), field);
+        let constraint = AExpr::transform_expression_to_constraint_form(term, field)
+            .expect("bit constraint failed");
+        constraints.push(constraint);
+    }
+
+    // Calcule decimal number to verify that the decimal-to-bit conversion is correct.
+    // TO verify it, Σ b_i * 2^i 
+    let mut sum_expr = AExpr::Number { value: BigInt::from(0) };
+    for i in 0..N {
+        let power_of_two = BigInt::from(1) << i;
+        let sum = AExpr::mul(&b_signals[i], &AExpr::Number { value: power_of_two }, field);
+        sum_expr = AExpr::add(&sum_expr, &sum, field);
+    }
+
+    // Reconstruct constraint
+    let reconstruct = AExpr::sub(l_value, &sum_expr, field);
+    let constraint = AExpr::transform_expression_to_constraint_form(reconstruct, field)
+        .expect("reconstruct failed");
+    constraints.push(constraint);
+
+    (b_signals, constraints)
+}
+
+
 // ----------------------------
 // operator for autocompelte function
 // ----------------------------
@@ -3722,48 +3768,12 @@ fn execute_infix_op_autocomplete(
             
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
-
+            
             let mut b_signals = vec![];
 
             // ================================= Convert number to bits =================================
-            // Creating b signals (b0,b1,b2, ..., b_{N-1})
-            for _ in 0..N{
-                let b_aux_name = format!("b_{}", runtime.new_added_vars);
-                runtime.new_added_vars+=1;
-                b_signals.push(AExpr::Signal { symbol: (b_aux_name).clone() });
-                new_vars_name.push(b_aux_name);
-            } 
-
-            // Force that b_i will be bits. (b_i * (1-b_i) = 0)
-            for bi in &b_signals{
-                let bit = AExpr::Number { value: BigInt::from(1) }; // 
-
-
-                let term = AExpr::mul(
-                    &bi,
-                    &AExpr::sub(&bit,&bi,field),
-                    field
-                );
-
-                let constraint = AExpr::transform_expression_to_constraint_form(term, field).expect("bit constraint filed");
-                constraints.push(constraint);
-
-            }
-
-            // Calcule decimal number to verify that the decimal-to-bit conversion is correct.
-            // TO verify it, Σ b_i * 2^i 
-            let mut sum_expr = AExpr::Number{value: BigInt::from(0)};
-
-            for i in 0..N{
-                let power_of_two = BigInt::from(1) <<i; 
-                let sum = AExpr::mul(&b_signals[i], &AExpr::Number{value: BigInt::from(power_of_two)}, field);
-                sum_expr = AExpr::add(&sum_expr, &sum, field);
-            }
-
-            let reconstruct = AExpr::sub(l_value, &sum_expr, field);
-            let constraint = AExpr::transform_expression_to_constraint_form(reconstruct, field).expect("reconstruct failed"); 
-            constraints.push(constraint);
-            
+            let (b_signals, mut constraint_bit) = decimal_to_bits(l_value, N,field,runtime, new_vars_name);
+            constraints.extend(constraint_bit);
 
             // ================================= Shift Left =================================
             // Creation of shift signals
