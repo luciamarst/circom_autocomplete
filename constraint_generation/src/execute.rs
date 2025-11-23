@@ -4174,6 +4174,26 @@ fn execute_infix_op_autocomplete(
                 new_vars_name
             ))
         }
+        Eq => {
+            let mut constraints = vec![];
+            let mut new_vars_name = vec![];
+
+            let output = AExpr::sub(l_value, r_value, field);
+            let c_out = AExpr::transform_expression_to_constraint_form(output.clone(), field).expect("Eq constraint failed");
+            constraints.push(c_out);
+
+            Ok((
+                output,
+                constraints,
+                new_vars_name
+            ))
+        }
+        // NotEq => {}
+        // BoolOr => {}
+        // BoolAnd => {}
+        // BitOr => {}
+        // BitAnd => {}
+        // BitXor => {}
         _ => unreachable!()
     };
     treat_result_with_arithmetic_error(
