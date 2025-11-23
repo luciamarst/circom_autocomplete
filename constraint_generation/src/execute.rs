@@ -3657,6 +3657,35 @@ fn execute_infix_op_autocomplete(
                 vec![q_aux_name,r_aux_name]
             ))
         }
+        Mod => {
+            // Operation: r_aux = l_value - (r_value * q_aux) | New constraint: r_aux - (l_value - (r_value * q_aux) ) = 0
+
+            // q_aux declaration
+            let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
+            runtime.new_added_vars+=1;
+            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
+            //r_aux declaration
+            let r_aux_name = format!("raux_{}", runtime.new_added_vars);
+            runtime.new_added_vars+=1;
+            let r_aux = AExpr::Signal{symbol: r_aux_name.clone()};
+
+            //Construction of r_value*q_aux operation
+            let b_product_q = AExpr::mul(r_value, &q_aux,field);
+
+            //Constructoin of l_value - (r_value * q_aux) operation
+            let a_sub_product = AExpr::sub(l_value, &b_product_q, field);
+
+            // Construction of new constraint: r_aux - (l_value - (r_value * q_aux)) 
+            let expr_new_constraint = AExpr::sub(&r_aux, &a_sub_product, field);
+            // Construction of the equation for the new constraint
+            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transofmración a constraint falló.");
+
+            Ok((
+                r_aux,
+                vec![new_constraint],
+                vec![q_aux_name, r_aux_name]
+            ))
+        }
         _ => unreachable!()
     };
     treat_result_with_arithmetic_error(
