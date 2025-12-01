@@ -3886,7 +3886,23 @@ fn is_equal(
 
 
 }
+fn reconstruct_binary_number(
+    binary: &Vec<AExpr>,
+    N: usize,
+    field: &BigInt,
+    runtime: &mut RuntimeInformation,
+    new_vars_name: &mut Vec<String>
+)-> AExpr{
 
+    let mut sum_expr = AExpr::Number { value: BigInt::from(0) };
+    for i in 0..N {
+        let power_of_two = BigInt::from(1) << i;
+        let sum = AExpr::mul(&binary[i], &AExpr::Number { value: power_of_two }, field);
+        sum_expr = AExpr::add(&sum_expr, &sum, field);
+    }
+
+    sum_expr
+}
 // ----------------------------
 // operator for autocompelte function
 // ----------------------------
@@ -4305,10 +4321,161 @@ fn execute_infix_op_autocomplete(
                 vec![]
             ))
         }
-        // BitOr => {}
-        // BitAnd => {}
-        // BitXor => {}
-        _ => unreachable!()
+        BitOr => {
+             //Operator l_value | r_value | New Constraint: a_binary[i] + b_binary[i] - a_binary[i] * b_binary[i] 
+            let N = MAX_BITS; // total bits number
+            let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
+
+            let mut constraints = vec![];
+            let mut new_vars_name = vec![];
+            
+            // ================================= Convert number to bits =================================
+            let (field_copy, l_value) = {
+                // Scope 
+                let field_copy = runtime.constants.get_p().clone(); 
+                let l_value = l_value.clone();                       
+                (field_copy, l_value)
+            }; 
+
+            // l_value to bits
+            let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            constraints.extend(a_constraints_bit);
+
+            // r_value to bits
+            let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, N, &field_copy, runtime, &mut new_vars_name);
+            constraints.extend(b_constraints_bit);
+
+            // Apply add bit to bit 
+            let mut aux_signals_add = vec![];
+            for i in 0..N{
+                let add_result_bit = AExpr::add(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
+                aux_signals_add.push(add_result_bit);
+            }
+
+            // Apply mul bit to bit 
+            let mut aux_signals_mul = vec![];
+            for i in 0..N{
+                let mul_result_bit = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
+                aux_signals_mul.push(mul_result_bit);
+            }
+
+            // Apply sub to add and mul signals
+            let mut aux_signals_sub = vec![];
+            for i in 0..N{
+                let sub_result_bit = AExpr::mul(&aux_signals_add[i], &aux_signals_mul[i], &field_copy);
+                aux_signals_sub.push(sub_result_bit);
+            }
+
+            let result = reconstruct_binary_number(&aux_signals_sub, N, field, runtime, &mut new_vars_name);
+
+            Ok((
+                result,
+                constraints,
+                new_vars_name,
+            ))
+
+        }
+        BitAnd => {
+            //Operator l_value | r_value | New Constraint: a_binary[i] * b_binary[i] 
+            let N = MAX_BITS; // total bits number
+            let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
+
+            let mut constraints = vec![];
+            let mut new_vars_name = vec![];
+            
+            // ================================= Convert number to bits =================================
+            let (field_copy, l_value) = {
+                // Scope 
+                let field_copy = runtime.constants.get_p().clone(); 
+                let l_value = l_value.clone();                       
+                (field_copy, l_value)
+            }; 
+
+            // l_value to bits
+            let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            constraints.extend(a_constraints_bit);
+
+            // r_value to bits
+            let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, N, &field_copy, runtime, &mut new_vars_name);
+            constraints.extend(b_constraints_bit);
+
+            // Apply & bit to bit
+            let mut aux_signals = vec![];
+            for i in 0..N{
+                let and_result_bit = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
+                aux_signals.push(and_result_bit);
+            }
+
+            let result = reconstruct_binary_number(&aux_signals, N, field, runtime, &mut new_vars_name);
+
+            Ok((
+                result,
+                constraints,
+                new_vars_name,
+            ))
+
+        }
+        BitXor => {
+            //Operator l_value | r_value | New Constraint: 1 - (a_binary[i] + b_binary[i] - a_binary[i] * b_binary[i]) 
+            let N = MAX_BITS; // total bits number
+            let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
+
+            let mut constraints = vec![];
+            let mut new_vars_name = vec![];
+            
+            // ================================= Convert number to bits =================================
+            let (field_copy, l_value) = {
+                // Scope 
+                let field_copy = runtime.constants.get_p().clone(); 
+                let l_value = l_value.clone();                       
+                (field_copy, l_value)
+            }; 
+
+            // l_value to bits
+            let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            constraints.extend(a_constraints_bit);
+
+            // r_value to bits
+            let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, N, &field_copy, runtime, &mut new_vars_name);
+            constraints.extend(b_constraints_bit);
+
+            // Apply add bit to bit 
+            let mut aux_signals_add = vec![];
+            for i in 0..N{
+                let add_result_bit = AExpr::add(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
+                aux_signals_add.push(add_result_bit);
+            }
+
+            // Apply mul bit to bit 
+            let mut aux_signals_mul = vec![];
+            for i in 0..N{
+                let mul_result_bit = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
+                aux_signals_mul.push(mul_result_bit);
+            }
+
+            // Apply sub to add and mul signals
+            let mut aux_signals_sub = vec![];
+            for i in 0..N{
+                let sub_result_bit = AExpr::mul(&aux_signals_add[i], &aux_signals_mul[i], &field_copy);
+                aux_signals_sub.push(sub_result_bit);
+            }
+
+            // Apply 1 - aux_signals_sub[i]
+            let mut aux_signals_reverse = vec![];
+            for i in 0..N{
+                let reverse_result_bit = AExpr::mul(&AExpr::Number { value: BigInt::from(1) }, &aux_signals_sub[i], &field_copy);
+                aux_signals_reverse.push(reverse_result_bit);
+            }
+
+            let result = reconstruct_binary_number(&aux_signals_reverse, N, field, runtime, &mut new_vars_name);
+
+            Ok((
+                result,
+                constraints,
+                new_vars_name,
+            ))
+
+        }
     };
     treat_result_with_arithmetic_error(
         possible_result,
