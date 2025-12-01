@@ -30,7 +30,7 @@ use super::{
     ast::*, ArithmeticError, FileID, ProgramArchive, Report, ReportCode, ReportCollection
 };
 use circom_algebra::num_bigint::BigInt;
-use std::collections::{HashMap, BTreeMap};
+use std::{collections::{BTreeMap, HashMap}, fmt::Error};
 use crate::FlagsExecution;
 type AExpr = ArithmeticExpressionGen<String>;
 type AnonymousComponentsInfo = BTreeMap<String, (Meta, Vec<Expression>)>;
@@ -3830,7 +3830,19 @@ fn secure_less_than(
     ))
 }
 /*
-    sub * 1/sub = 1 - out
+    We have to difference between the sub its 0 or its distinct to 0.
+    This is because, if sub != 0, that mean sub = 2 - 0 = 2
+    Then sub *out = 0 -> 2 * out = 0 -> out = 0 -> Indicate that 2 and 0 aren't equals
+
+    On the other hand, if sub = 2 - 2 = 0 -> 0 * out = 0 
+    out could be any number
+
+    For that, we have to know if sub its 0 or not,
+    if sub = 0 (In other words, they are equal):
+        out = 1
+    else 
+        sub * out = 0
+
 */
 fn is_equal(
     l_value: &AExpr,
@@ -3844,26 +3856,26 @@ fn is_equal(
     // l_value - r_value
     let sub = AExpr::sub(l_value,r_value,  &field_copy);
 
-    // div
-    let div_name = format!("inv_{}", runtime.new_added_vars);
-    new_vars_name.push(div_name.clone());
-    runtime.new_added_vars += 1;
-    let div = AExpr::Signal { symbol: div_name };
-
+    // We have to difference between sub = 0 and sub != 0
+    let equal = AExpr::eq(&sub, &AExpr::Number { value: BigInt::from(0)}, &field_copy);
+    let not_eq = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &equal, &field_copy);
+   
     // Out signal declaration
     let out_name = format!("out_{}", runtime.new_added_vars);
     new_vars_name.push(out_name.clone());
     runtime.new_added_vars+=1;
     let out = AExpr::Signal{symbol: out_name.clone()};
 
-    // 1 -out
-    let sub_out = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &out,  &field_copy);
-
-    // sub * div
-    let mul = AExpr::mul(&sub, &div,  &field_copy);
-
-    // sub * div = 1 - out -> (sub*div) - (1-out) = 0
-    let sub_final = AExpr::sub(&mul, &sub_out,  &field_copy);
+    // sub * out
+    let sub_out = AExpr::mul(&sub, &out, &field_copy);
+    let sub_not_zero = AExpr::mul(&not_eq, &sub_out, &field_copy);
+   
+    // out * equal
+    let out_equal = AExpr::mul(&out, &equal, &field_copy);
+    let sub_left = AExpr::sub(&equal, &out_equal, &field_copy);
+    
+    // (equal - out*equal) + ((1- equal) * sub_out) = 0
+    let sub_final = AExpr::add(&sub_left, &sub_not_zero,  &field_copy);
     let constraint = AExpr::transform_expression_to_constraint_form(sub_final,  &field_copy).unwrap();
     constraints.push(constraint);
 
@@ -3895,6 +3907,7 @@ fn execute_infix_op_autocomplete(
             let res_mul = AExpr::mul(l_value, r_value, field);
             let new_signal = format!("newaux_{}", runtime.new_added_vars);
             runtime.new_added_vars += 1;
+            
             let expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
             let expr_new_constraint = AExpr::sub(&res_mul, &expr_signal, field);
             // El transform lo que hace es igualar la expresion a 0
@@ -3931,7 +3944,7 @@ fn execute_infix_op_autocomplete(
 
         }
         Add => {
-            // New constraint =>  l_value + r_value - newaux === 0
+            // New constraint =>  l_value + r_value 
             let res_add = AExpr::add(l_value, r_value, field);
          
             Ok((
@@ -3941,7 +3954,7 @@ fn execute_infix_op_autocomplete(
             ))
         }
         Sub =>{
-            // New constraint =>  l_value - r_value - newaux === 0
+            // New constraint =>  l_value - r_value 
             let res_sub = AExpr::sub(l_value, r_value, field);
             //let negative = res_sub > field / 2;
 
@@ -3955,6 +3968,9 @@ fn execute_infix_op_autocomplete(
             // New constraint => l_value = product {0...r_value} (l_value)  - aux = 0
             let pow = AExpr::pow(l_value, r_value, field); // l_value^(r_value)
             
+            // First, match that l_value and r_value (ArithmeticExpression<String> are a Number type)
+           
+
             let aux_name = format!("newaux_{}", runtime.new_added_vars);
             runtime.new_added_vars += 1;
             let aux = AExpr::Signal { symbol: aux_name.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
@@ -4242,6 +4258,7 @@ fn execute_infix_op_autocomplete(
             ))
         }
         Eq => {
+            // Operator l_value == r_value | New Constraint: (equal - out*equal) + (1 - equal) * (sub * out) = 0
             let mut new_vars_name = vec![];
             let (output, constraints_eq) = is_equal(l_value, r_value,runtime, &mut new_vars_name).unwrap();
 
@@ -4252,6 +4269,7 @@ fn execute_infix_op_autocomplete(
             ))
         }
         NotEq => {
+            // Operator l_value != r_value | New Constraint: 1 - ((equal - out*equal) + (1 - equal) * (sub * out)) = 0
             let mut new_vars_name =vec![];
 
             let (output, constraints_eq) = is_equal(l_value, r_value,runtime, &mut new_vars_name).unwrap();
@@ -4264,8 +4282,29 @@ fn execute_infix_op_autocomplete(
                 new_vars_name
             ))
         }
-        // BoolOr => {}
-        // BoolAnd => {}
+        BoolOr => {
+            //Operator l_value or r_value | New Constraint: a + b - a * b 
+            let add_or = AExpr::add(l_value, r_value, field);
+            let mul_or = AExpr::mul(l_value, r_value, field);
+
+            let result = AExpr::sub(&add_or, &mul_or, field);
+      
+             Ok((
+                result,
+                vec![],
+                vec![]
+            ))
+        }
+        BoolAnd => {
+            //Operator l_value or r_value | New Constraint: a * b 
+            let mul_and = AExpr::mul(l_value, r_value, field);
+
+             Ok((
+                mul_and,
+                vec![],
+                vec![]
+            ))
+        }
         // BitOr => {}
         // BitAnd => {}
         // BitXor => {}
