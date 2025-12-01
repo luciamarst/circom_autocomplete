@@ -154,6 +154,9 @@ impl TemplateData {
     pub fn is_parallel(&self) -> bool {
         self.is_parallel
     }
+    pub fn is_autocomplete(&self) -> bool{
+        self.is_autocomplete
+    }
     pub fn is_custom_gate(&self) -> bool {
         self.is_custom_gate
     }

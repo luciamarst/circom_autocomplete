@@ -1060,16 +1060,31 @@ fn execute_expression(
             let l_fold = execute_expression(lhe, program_archive, runtime, flags)?;
             let r_fold = execute_expression(rhe, program_archive, runtime, flags)?;
                     //TODO: FATAL        
-                let l_constraints: Vec<_> = l_fold.new_constraints.clone().unwrap(); 
-                let l_signals= l_fold.new_signals.clone().unwrap();
+                let mut l_constraints: Vec<_> = match &l_fold.new_constraints {
+                    Some(value) => value.clone(),
+                    None=> vec![]
+                };
 
-                let r_constraints= r_fold.new_constraints.clone().unwrap();
-                let r_signals= r_fold.new_signals.clone().unwrap();
+                let mut l_signals=  match &l_fold.new_signals {
+                    Some(value) => value.clone(),
+                    None=> vec![]
+                };
+
+                let mut r_constraints= match &r_fold.new_constraints{
+                    Some(value) => value.clone(),
+                    None=> vec![]
+                };
+
+                let mut r_signals= match &r_fold.new_signals{
+                    Some(value) => value.clone(),
+                    None=> vec![]
+                };
+
             let l_value = safe_unwrap_to_single_arithmetic_expression(l_fold, line!());
             let r_value = safe_unwrap_to_single_arithmetic_expression(r_fold, line!());
             if runtime.is_autocomplete{
 
-                let (result_value, result_constraints, result_signals) = execute_infix_op_autocomplete(
+                let (result_value,mut result_constraints, mut result_signals) = execute_infix_op_autocomplete(
                     meta,
                     *infix_op,
                     &l_value, 
@@ -1077,14 +1092,37 @@ fn execute_expression(
                     runtime
                 )?;
 
+                println!("Traduciendo expresion -> añadiendo constraints: ");
+                for c in &result_constraints{
+                    c.print_pretty_constraint();
+                }
+                println!("-> Signals: ");
+                for c in &result_signals{
+                    println!("***{}", c);
+                }
+                r_constraints.extend(result_constraints);
+                l_constraints.extend(r_constraints);
+
+                r_signals.extend(result_signals);
+                l_signals.extend(r_signals);
+
+                let r_slice = AExpressionSlice::new(&result_value);
+                    FoldedValue { 
+                    arithmetic_slice: Option::Some(r_slice), 
+                    new_constraints: Option::Some(l_constraints),
+                    new_signals: Option::Some(l_signals),
+                    ..FoldedValue::default() 
+                }
+
             } else{
                 let r_value = execute_infix_op(meta, *infix_op, &l_value, &r_value, runtime)?;
+                let r_slice = AExpressionSlice::new(&r_value);
+                FoldedValue { 
+                    arithmetic_slice: Option::Some(r_slice), 
+                    ..FoldedValue::default() 
+                }
             }
-            let r_slice = AExpressionSlice::new(&r_value);
-            FoldedValue { 
-                arithmetic_slice: Option::Some(r_slice), 
-                ..FoldedValue::default() 
-            }
+            
         }
         PrefixOp { prefix_op, rhe, .. } => {
             let folded_value = execute_expression(rhe, program_archive, runtime, flags)?;
@@ -1208,11 +1246,14 @@ fn execute_template_call_complete(
         let previous_environment = std::mem::replace(&mut runtime.environment, new_environment);
         let previous_block_type = std::mem::replace(&mut runtime.block_type, BlockType::Known);
         let previous_anonymous_components = std::mem::replace(&mut runtime.anonymous_components, AnonymousComponentsInfo::new());
+        let previous_autocomplete = runtime.is_autocomplete;
 
         let new_file_id = program_archive.get_template_data(id).get_file_id();
         let previous_id = std::mem::replace(&mut runtime.current_file, new_file_id);
 
         runtime.call_trace.push(id.clone());
+
+
         let folded_result = execute_template_call(id, arg_values, tags, program_archive, runtime, flags)?;
 
         runtime.environment = previous_environment;
@@ -1220,6 +1261,7 @@ fn execute_template_call_complete(
         runtime.block_type = previous_block_type;
         runtime.anonymous_components = previous_anonymous_components;
         runtime.call_trace.pop();
+        runtime.is_autocomplete = previous_autocomplete;
         Ok(folded_result)
     } else { 
        unreachable!();
@@ -3234,6 +3276,7 @@ fn execute_template_call(
     let is_main = std::mem::replace(&mut runtime.public_inputs, vec![]);
     let is_parallel = program_archive.get_template_data(id).is_parallel();
     let is_custom_gate = program_archive.get_template_data(id).is_custom_gate();
+    runtime.is_autocomplete = program_archive.get_template_data(id).is_autocomplete();
     let is_extern_c = program_archive.get_template_data(id).is_extern_c();    
     let args_names = program_archive.get_template_data(id).get_name_of_params();
     let template_body = program_archive.get_template_data(id).get_body_as_vec();
@@ -3241,6 +3284,7 @@ fn execute_template_call(
     debug_assert_eq!(args_names.len(), parameter_values.len());
     let mut instantiation_name = format!("{}(", id);
     let mut not_empty_name = false;
+
     for (name, value) in args_names.iter().zip(parameter_values) {
         instantiation_name.push_str(&format!("{},", value.to_string()));
         not_empty_name = true;
@@ -3785,7 +3829,51 @@ fn secure_less_than(
         constraints
     ))
 }
+/*
+    sub * 1/sub = 1 - out
+*/
+fn is_equal(
+    l_value: &AExpr,
+    r_value: &AExpr,
+    runtime: &mut RuntimeInformation,
+    new_vars_name: &mut Vec<String>,
+) -> Result<(AExpr, Vec<Constraint>), String> {
+    let mut constraints: Vec<Constraint> = vec![];
+    let field_copy = runtime.constants.get_p().clone();
+   
+    // l_value - r_value
+    let sub = AExpr::sub(l_value,r_value,  &field_copy);
 
+    // div
+    let div_name = format!("inv_{}", runtime.new_added_vars);
+    new_vars_name.push(div_name.clone());
+    runtime.new_added_vars += 1;
+    let div = AExpr::Signal { symbol: div_name };
+
+    // Out signal declaration
+    let out_name = format!("out_{}", runtime.new_added_vars);
+    new_vars_name.push(out_name.clone());
+    runtime.new_added_vars+=1;
+    let out = AExpr::Signal{symbol: out_name.clone()};
+
+    // 1 -out
+    let sub_out = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &out,  &field_copy);
+
+    // sub * div
+    let mul = AExpr::mul(&sub, &div,  &field_copy);
+
+    // sub * div = 1 - out -> (sub*div) - (1-out) = 0
+    let sub_final = AExpr::sub(&mul, &sub_out,  &field_copy);
+    let constraint = AExpr::transform_expression_to_constraint_form(sub_final,  &field_copy).unwrap();
+    constraints.push(constraint);
+
+    Ok((
+        out,
+        constraints
+    ))
+
+
+}
 
 // ----------------------------
 // operator for autocompelte function
@@ -3800,7 +3888,7 @@ fn execute_infix_op_autocomplete(
     
 ) -> Result<(AExpr,Vec<Constraint>, Vec<String>), ()> {
     use ExpressionInfixOpcode::*;
-    let field = runtime.constants.get_p();
+    let field = &runtime.constants.get_p().clone();
     let possible_result = match infix {
         Mul =>{
             // New constraint =>  l_value * r_value - newaux === 0
@@ -3845,17 +3933,11 @@ fn execute_infix_op_autocomplete(
         Add => {
             // New constraint =>  l_value + r_value - newaux === 0
             let res_add = AExpr::add(l_value, r_value, field);
-            let new_signal = format!("newaux_{}", runtime.new_added_vars);
-            runtime.new_added_vars += 1;
-            let expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
-            let expr_new_constraint = AExpr::sub(&res_add, &expr_signal, field);
-            // El transform lo que hace es igualar la expresion a 0
-            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
-
+         
             Ok((
-                expr_signal,
-                vec![new_constraint],
-                vec![new_signal]
+                res_add,
+                vec![],
+                vec![]
             ))
         }
         Sub =>{
@@ -3863,37 +3945,28 @@ fn execute_infix_op_autocomplete(
             let res_sub = AExpr::sub(l_value, r_value, field);
             //let negative = res_sub > field / 2;
 
-
-            let new_signal = format!("newaux_{}", runtime.new_added_vars);
-            runtime.new_added_vars += 1;
-
-            let expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
-            let expr_new_constraint = AExpr::sub(&res_sub, &expr_signal, field);
-
-            // El transform lo que hace es igualar la expresion a 0
-            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
-
             Ok((
-                expr_signal,
-                vec![new_constraint],
-                vec![new_signal]
+                res_sub,
+                vec![],
+                vec![]
             ))
         }
         Pow => {
-            // New constraint => l_value = product {0...r_value} (l_value)  - newaux = 0
-            let res_div = AExpr::pow(l_value, r_value, field); // l_value^(r_value)
-            let new_signal = format!("newaux_{}", runtime.new_added_vars);
-            runtime.new_added_vars += 1;
+            // New constraint => l_value = product {0...r_value} (l_value)  - aux = 0
+            let pow = AExpr::pow(l_value, r_value, field); // l_value^(r_value)
             
-            let expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
-            let expr_new_constraint = AExpr::sub(&res_div, &expr_signal, field);
+            let aux_name = format!("newaux_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let aux = AExpr::Signal { symbol: aux_name.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
+            
+            let expr_new_constraint = AExpr::sub(&pow, &aux, field);
             // El transform lo que hace es igualar la expresion a 0
-            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
+            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint.clone(), field).expect("La transformación a constraint falló");
 
             Ok((
-                expr_signal,
+                expr_new_constraint,
                 vec![new_constraint],
-                vec![new_signal]
+                vec![aux_name]
             ))
         }
         IntDiv =>{
@@ -3964,8 +4037,7 @@ fn execute_infix_op_autocomplete(
 
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
-            let mut b_signals: Vec<AExpr> = vec![];
-
+            
             // ================================= Convert number to bits =================================
             let (field_copy, l_value) = {
                 // Scope 
@@ -4088,11 +4160,10 @@ fn execute_infix_op_autocomplete(
         }
         LesserEq =>{
             // Operator l_value <= r_value | New Constraint: 
-            let N = MAX_BITS;
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
 
-            let (output, constraints_lesserEq) = match secure_less_than_eq(N, l_value,r_value, runtime, &mut new_vars_name) {
+            let (output, constraints_lesserEq) = match secure_less_than_eq(MAX_BITS, l_value,r_value, runtime, &mut new_vars_name) {
                 Ok(v) => v,
                 Err(_) => return Err(()), 
             };
@@ -4105,13 +4176,12 @@ fn execute_infix_op_autocomplete(
             ))
         }
         GreaterEq =>{
-            // Operator l_value > r_value | New Constraint: 
-            let N = MAX_BITS;
+            // Operator l_value >= r_value | New Constraint: 
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
             
             let field_copy = runtime.constants.get_p().clone();
-            let (output_aux, constraints_lesserEq) = match secure_less_than(N, l_value,r_value, runtime, &mut new_vars_name) {
+            let (output_aux, constraints_lesserEq) = match secure_less_than(MAX_BITS, l_value,r_value, runtime, &mut new_vars_name) {
                 Ok(v) => v,
                 Err(_) => return Err(()), 
             };
@@ -4132,19 +4202,16 @@ fn execute_infix_op_autocomplete(
         }
         Lesser=>{
             // Operator l_value < r_value | New Constraint: 
-            let N = MAX_BITS;
-            let mut constraints = vec![];
             let mut new_vars_name = vec![];
 
-            let (output, constraints_lesserEq) = match secure_less_than(N, l_value,r_value, runtime, &mut new_vars_name) {
+            let (output, constraints_lesserEq) = match secure_less_than(MAX_BITS, l_value,r_value, runtime, &mut new_vars_name) {
                 Ok(v) => v,
                 Err(_) => return Err(()), 
             };
-           constraints.extend(constraints_lesserEq);
 
             Ok((
                 output,
-                constraints,
+                constraints_lesserEq,
                 new_vars_name
             ))
         }
@@ -4175,32 +4242,25 @@ fn execute_infix_op_autocomplete(
             ))
         }
         Eq => {
-            let mut constraints = vec![];
             let mut new_vars_name = vec![];
-            
-            let output = AExpr::sub(l_value, r_value, field);
-            let c_out = AExpr::transform_expression_to_constraint_form(output.clone(), field).expect("Eq constraint failed");
-            constraints.push(c_out);
+            let (output, constraints_eq) = is_equal(l_value, r_value,runtime, &mut new_vars_name).unwrap();
 
             Ok((
                 output,
-                constraints,
+                constraints_eq,
                 new_vars_name
             ))
         }
         NotEq => {
-             let mut constraints = vec![];
-            let mut new_vars_name = vec![];
+            let mut new_vars_name =vec![];
 
-            let one = AExpr::Number { value: BigInt::from(1) };
-            let output = AExpr::sub(l_value, r_value, field);
-            let inverse = AExpr::sub(&one, &output, field);
-            let c_out = AExpr::transform_expression_to_constraint_form(inverse.clone(), field).expect("Not Eq constraint failed");
-            constraints.push(c_out);
+            let (output, constraints_eq) = is_equal(l_value, r_value,runtime, &mut new_vars_name).unwrap();
+
+            let not_eq = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &output,field);
 
             Ok((
-                inverse,
-                constraints,
+                not_eq,
+                constraints_eq,
                 new_vars_name
             ))
         }
