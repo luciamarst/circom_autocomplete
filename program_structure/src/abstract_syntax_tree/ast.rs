@@ -388,6 +388,17 @@ pub enum ExpressionInfixOpcode {
     BitOr,
     BitAnd,
     BitXor,
+    ShiftLN,
+    ShiftRN,
+    LesserEqN,
+    GreaterEqN,
+    LesserN,
+    GreaterN,
+    EqN,
+    NotEqN,
+    BitOrN,
+    BitAndN,
+    BitXorN
 }
 
 #[derive(Copy, Clone, PartialEq)]

@@ -30,7 +30,7 @@ use super::{
     ast::*, ArithmeticError, FileID, ProgramArchive, Report, ReportCode, ReportCollection
 };
 use circom_algebra::num_bigint::BigInt;
-use std::{collections::{BTreeMap, HashMap}, fmt::Error};
+use std::{collections::{BTreeMap, HashMap}, fmt::Error/* , intrinsics::unreachable*/};
 use crate::FlagsExecution;
 type AExpr = ArithmeticExpressionGen<String>;
 type AnonymousComponentsInfo = BTreeMap<String, (Meta, Vec<Expression>)>;
@@ -1059,7 +1059,8 @@ fn execute_expression(
         InfixOp { meta, lhe, infix_op, rhe, .. } => {
             let l_fold = execute_expression(lhe, program_archive, runtime, flags)?;
             let r_fold = execute_expression(rhe, program_archive, runtime, flags)?;
-                    //TODO: FATAL        
+                
+                //TODO: FATAL        
                 let mut l_constraints: Vec<_> = match &l_fold.new_constraints {
                     Some(value) => value.clone(),
                     None=> vec![]
@@ -3555,6 +3556,7 @@ fn execute_infix_op(
         BitOr => Result::Ok(AExpr::bit_or(l_value, r_value, field)),
         BitAnd => Result::Ok(AExpr::bit_and(l_value, r_value, field)),
         BitXor => Result::Ok(AExpr::bit_xor(l_value, r_value, field)),
+        _=>unreachable!()
     };
     treat_result_with_arithmetic_error(
         possible_result,
@@ -4121,6 +4123,9 @@ fn execute_infix_op_autocomplete(
                 new_vars_name
             ))
         }
+        // ShiftLN =>{
+        //     // New Operation x <<n y ; Constraint: 
+        // }
         ShiftR =>{
             // Operation: decimal_number >> displacement 
             // N is the number of bits of the decimal_number transformed to binary
@@ -4476,7 +4481,18 @@ fn execute_infix_op_autocomplete(
             ))
 
         }
-    };
+        // ShiftRN =>{}
+        // LesserEqN =>{}
+        // GreaterEqN =>{}
+        // LesserN => {}
+        // GreaterN => {}
+        // EqN => {}
+        // NotEqN =>{}
+        // BitOrN => {}
+        // BitAndN => {}
+        // BitXorN =>{}
+        _=>unreachable!()
+     };
     treat_result_with_arithmetic_error(
         possible_result,
         meta,
