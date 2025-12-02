@@ -6,9 +6,15 @@ pub fn build_infix(
     meta: Meta,
     lhe: Expression,
     infix_op: ExpressionInfixOpcode,
+    size: Option<Expression>,
     rhe: Expression,
 ) -> Expression {
-    InfixOp { meta, infix_op, lhe: Box::new(lhe), rhe: Box::new(rhe) }
+    if size.is_none() {
+        InfixOp { meta, infix_op, lhe: Box::new(lhe), size: None, rhe: Box::new(rhe)}
+    }
+    else{
+        InfixOp { meta, infix_op, lhe: Box::new(lhe), size: Some(Box::new(size.unwrap())), rhe: Box::new(rhe)}
+    }
 }
 
 pub fn build_prefix(meta: Meta, prefix_op: ExpressionPrefixOpcode, rhe: Expression) -> Expression {

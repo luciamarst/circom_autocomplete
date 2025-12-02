@@ -1059,6 +1059,7 @@ fn execute_expression(
         InfixOp { meta, lhe, infix_op, rhe, .. } => {
             let l_fold = execute_expression(lhe, program_archive, runtime, flags)?;
             let r_fold = execute_expression(rhe, program_archive, runtime, flags)?;
+            let size_fold = execute_expression(size, program_archive, runtime, flags)?;
                 
                 //TODO: FATAL        
                 let mut l_constraints: Vec<_> = match &l_fold.new_constraints {
@@ -1083,11 +1084,16 @@ fn execute_expression(
 
             let l_value = safe_unwrap_to_single_arithmetic_expression(l_fold, line!());
             let r_value = safe_unwrap_to_single_arithmetic_expression(r_fold, line!());
+            let s_value = safe_unwrap_to_single_arithmetic_expression(size_fold, line!());
+
+            let size = s_value.cast_index();
+
             if runtime.is_autocomplete{
 
                 let (result_value,mut result_constraints, mut result_signals) = execute_infix_op_autocomplete(
                     meta,
                     *infix_op,
+                    size,
                     &l_value, 
                     &r_value, 
                     runtime
@@ -3556,7 +3562,6 @@ fn execute_infix_op(
         BitOr => Result::Ok(AExpr::bit_or(l_value, r_value, field)),
         BitAnd => Result::Ok(AExpr::bit_and(l_value, r_value, field)),
         BitXor => Result::Ok(AExpr::bit_xor(l_value, r_value, field)),
-        _=>unreachable!()
     };
     treat_result_with_arithmetic_error(
         possible_result,
@@ -3912,14 +3917,18 @@ const MAX_BITS: usize = 253;
 fn execute_infix_op_autocomplete(
     meta: &Meta,
     infix: ExpressionInfixOpcode,
+    size: Option<usize>,
     l_value: &AExpr,
     r_value: &AExpr,
     runtime: &mut RuntimeInformation,
     
+    
 ) -> Result<(AExpr,Vec<Constraint>, Vec<String>), ()> {
     use ExpressionInfixOpcode::*;
     let field = &runtime.constants.get_p().clone();
+    let n: usize = if size.is_some(){size.unwrap()}  else {MAX_BITS};
     let possible_result = match infix {
+        
         Mul =>{
             // New constraint =>  l_value * r_value - newaux === 0
             let res_mul = AExpr::mul(l_value, r_value, field);
@@ -4065,9 +4074,8 @@ fn execute_infix_op_autocomplete(
             ))
         }
         ShiftL =>{
-            let N = MAX_BITS; // total bits number
             let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
-            assert!(k <= N, "Shift exceeds bit width");
+            assert!(k <= n, "Shift exceeds bit width");
 
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
@@ -4081,14 +4089,14 @@ fn execute_infix_op_autocomplete(
             }; 
 
             // Now mutable borrow from runtime is safe
-            let (b_signals, constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            let (b_signals, constraints_bit) = decimal_to_bits(&l_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(constraints_bit);
 
             // ================================= Shift Left =================================
             // Creation of shift signals
             let mut s_signals = vec![];
 
-            for _ in 0..N {
+            for _ in 0..n {
                 let shift_signal_name = format!("s_{}", runtime.new_added_vars);
                 runtime.new_added_vars += 1;
                 s_signals.push(AExpr::Signal { symbol: shift_signal_name.clone() });
@@ -4096,14 +4104,14 @@ fn execute_infix_op_autocomplete(
             }
 
             // Fill in the displaced part
-            for i in 0..(N - k) {
+            for i in 0..(n - k) {
                 let eq = AExpr::sub(&s_signals[i], &b_signals[i + k], &field_copy);
                 let c = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
                 constraints.push(c);
             }
 
             // Fill the remaining (least significant) part with shifted zeros
-            for i in (N - k)..N {
+            for i in (n - k)..n {
                 let eq = AExpr::sub(&s_signals[i], &AExpr::Number { value: BigInt::from(0) }, &field_copy);
                 let c = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
                 constraints.push(c);
@@ -4111,7 +4119,7 @@ fn execute_infix_op_autocomplete(
 
             // Convert the shifted value to decimal
             let mut sum_out = AExpr::Number { value: BigInt::from(0) };
-            for i in 0..N {
+            for i in 0..n {
                 let power_of_two = BigInt::from(1) << i;
                 let sum = AExpr::mul(&s_signals[i], &AExpr::Number { value: power_of_two }, &field_copy);
                 sum_out = AExpr::add(&sum_out, &sum, &field_copy);
@@ -4123,17 +4131,12 @@ fn execute_infix_op_autocomplete(
                 new_vars_name
             ))
         }
-        // ShiftLN =>{
-        //     // New Operation x <<n y ; Constraint: 
-        // }
         ShiftR =>{
             // Operation: decimal_number >> displacement 
             // N is the number of bits of the decimal_number transformed to binary
-
-            let N = MAX_BITS; // total bits number, 
             let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
 
-            assert!(k <= N, "Shift exceeds bit width");
+            assert!(k <= n, "Shift exceeds bit width");
             
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
@@ -4150,14 +4153,14 @@ fn execute_infix_op_autocomplete(
             };          
 
             // Now mutable borrow from runtime is safe
-            let (b_signals, constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            let (b_signals, constraints_bit) = decimal_to_bits(&l_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(constraints_bit);
 
             // ================================= Shift Left =================================
             // Creation of shift signals
             let mut s_signals = vec![];
 
-            for _ in 0..N{
+            for _ in 0..n{
                 let shift_signal_name = format!("s_{}", runtime.new_added_vars);
                 runtime.new_added_vars+=1;
                 s_signals.push(AExpr::Signal { symbol: (shift_signal_name).clone() });
@@ -4172,7 +4175,7 @@ fn execute_infix_op_autocomplete(
             }
 
             // Fill in the displaced part
-            for i in 0..(N-k){
+            for i in 0..(n-k){
                 let eq = AExpr::sub(&s_signals[i+k], &b_signals[i], &field_copy);
                 let c = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
                 constraints.push(c);
@@ -4182,7 +4185,7 @@ fn execute_infix_op_autocomplete(
             // TO verify it, Σ s_i * 2^i 
             let mut sum_out = AExpr::Number{value: BigInt::from(0)};
 
-            for i in 0..N{
+            for i in 0..n{
                 let power_of_two = BigInt::from(1) <<i; 
                 let sum = AExpr::mul(&s_signals[i], &AExpr::Number{value: BigInt::from(power_of_two)}, &field_copy);
                 sum_out = AExpr::add(&sum_out, &sum, &field_copy);
@@ -4200,7 +4203,7 @@ fn execute_infix_op_autocomplete(
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
 
-            let (output, constraints_lesserEq) = match secure_less_than_eq(MAX_BITS, l_value,r_value, runtime, &mut new_vars_name) {
+            let (output, constraints_lesserEq) = match secure_less_than_eq(n, l_value,r_value, runtime, &mut new_vars_name) {
                 Ok(v) => v,
                 Err(_) => return Err(()), 
             };
@@ -4218,7 +4221,7 @@ fn execute_infix_op_autocomplete(
             let mut new_vars_name = vec![];
             
             let field_copy = runtime.constants.get_p().clone();
-            let (output_aux, constraints_lesserEq) = match secure_less_than(MAX_BITS, l_value,r_value, runtime, &mut new_vars_name) {
+            let (output_aux, constraints_lesserEq) = match secure_less_than(n, l_value,r_value, runtime, &mut new_vars_name) {
                 Ok(v) => v,
                 Err(_) => return Err(()), 
             };
@@ -4241,7 +4244,7 @@ fn execute_infix_op_autocomplete(
             // Operator l_value < r_value | New Constraint: 
             let mut new_vars_name = vec![];
 
-            let (output, constraints_lesserEq) = match secure_less_than(MAX_BITS, l_value,r_value, runtime, &mut new_vars_name) {
+            let (output, constraints_lesserEq) = match secure_less_than(n, l_value,r_value, runtime, &mut new_vars_name) {
                 Ok(v) => v,
                 Err(_) => return Err(()), 
             };
@@ -4254,12 +4257,11 @@ fn execute_infix_op_autocomplete(
         }
         Greater =>{
             // Operator l_value > r_value | New Constraint: 
-            let N = MAX_BITS;
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
             
             let field_copy = runtime.constants.get_p().clone();
-            let (output_aux, constraints_lesserEq) = match secure_less_than_eq(N, l_value,r_value, runtime, &mut new_vars_name) {
+            let (output_aux, constraints_lesserEq) = match secure_less_than_eq(n, l_value,r_value, runtime, &mut new_vars_name) {
                 Ok(v) => v,
                 Err(_) => return Err(()), 
             };
@@ -4327,8 +4329,7 @@ fn execute_infix_op_autocomplete(
             ))
         }
         BitOr => {
-             //Operator l_value | r_value | New Constraint: a_binary[i] + b_binary[i] - a_binary[i] * b_binary[i] 
-            let N = MAX_BITS; // total bits number
+            //Operator l_value | r_value | New Constraint: a_binary[i] + b_binary[i] - a_binary[i] * b_binary[i] 
             let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
 
             let mut constraints = vec![];
@@ -4343,35 +4344,35 @@ fn execute_infix_op_autocomplete(
             }; 
 
             // l_value to bits
-            let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(a_constraints_bit);
 
             // r_value to bits
-            let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, N, &field_copy, runtime, &mut new_vars_name);
+            let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(b_constraints_bit);
 
             // Apply add bit to bit 
             let mut aux_signals_add = vec![];
-            for i in 0..N{
+            for i in 0..n{
                 let add_result_bit = AExpr::add(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
                 aux_signals_add.push(add_result_bit);
             }
 
             // Apply mul bit to bit 
             let mut aux_signals_mul = vec![];
-            for i in 0..N{
+            for i in 0..n{
                 let mul_result_bit = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
                 aux_signals_mul.push(mul_result_bit);
             }
 
             // Apply sub to add and mul signals
             let mut aux_signals_sub = vec![];
-            for i in 0..N{
+            for i in 0..n{
                 let sub_result_bit = AExpr::mul(&aux_signals_add[i], &aux_signals_mul[i], &field_copy);
                 aux_signals_sub.push(sub_result_bit);
             }
 
-            let result = reconstruct_binary_number(&aux_signals_sub, N, field, runtime, &mut new_vars_name);
+            let result = reconstruct_binary_number(&aux_signals_sub, n, field, runtime, &mut new_vars_name);
 
             Ok((
                 result,
@@ -4382,7 +4383,6 @@ fn execute_infix_op_autocomplete(
         }
         BitAnd => {
             //Operator l_value | r_value | New Constraint: a_binary[i] * b_binary[i] 
-            let N = MAX_BITS; // total bits number
             let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
 
             let mut constraints = vec![];
@@ -4397,21 +4397,21 @@ fn execute_infix_op_autocomplete(
             }; 
 
             // l_value to bits
-            let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(a_constraints_bit);
 
             // r_value to bits
-            let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, N, &field_copy, runtime, &mut new_vars_name);
+            let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(b_constraints_bit);
 
             // Apply & bit to bit
             let mut aux_signals = vec![];
-            for i in 0..N{
+            for i in 0..n{
                 let and_result_bit = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
                 aux_signals.push(and_result_bit);
             }
 
-            let result = reconstruct_binary_number(&aux_signals, N, field, runtime, &mut new_vars_name);
+            let result = reconstruct_binary_number(&aux_signals, n, field, runtime, &mut new_vars_name);
 
             Ok((
                 result,
@@ -4422,7 +4422,6 @@ fn execute_infix_op_autocomplete(
         }
         BitXor => {
             //Operator l_value | r_value | New Constraint: 1 - (a_binary[i] + b_binary[i] - a_binary[i] * b_binary[i]) 
-            let N = MAX_BITS; // total bits number
             let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
 
             let mut constraints = vec![];
@@ -4437,42 +4436,42 @@ fn execute_infix_op_autocomplete(
             }; 
 
             // l_value to bits
-            let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, N, &field_copy, runtime, &mut new_vars_name);
+            let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(a_constraints_bit);
 
             // r_value to bits
-            let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, N, &field_copy, runtime, &mut new_vars_name);
+            let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(b_constraints_bit);
 
             // Apply add bit to bit 
             let mut aux_signals_add = vec![];
-            for i in 0..N{
+            for i in 0..n{
                 let add_result_bit = AExpr::add(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
                 aux_signals_add.push(add_result_bit);
             }
 
             // Apply mul bit to bit 
             let mut aux_signals_mul = vec![];
-            for i in 0..N{
+            for i in 0..n{
                 let mul_result_bit = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
                 aux_signals_mul.push(mul_result_bit);
             }
 
             // Apply sub to add and mul signals
             let mut aux_signals_sub = vec![];
-            for i in 0..N{
+            for i in 0..n{
                 let sub_result_bit = AExpr::mul(&aux_signals_add[i], &aux_signals_mul[i], &field_copy);
                 aux_signals_sub.push(sub_result_bit);
             }
 
             // Apply 1 - aux_signals_sub[i]
             let mut aux_signals_reverse = vec![];
-            for i in 0..N{
+            for i in 0..n{
                 let reverse_result_bit = AExpr::mul(&AExpr::Number { value: BigInt::from(1) }, &aux_signals_sub[i], &field_copy);
                 aux_signals_reverse.push(reverse_result_bit);
             }
 
-            let result = reconstruct_binary_number(&aux_signals_reverse, N, field, runtime, &mut new_vars_name);
+            let result = reconstruct_binary_number(&aux_signals_reverse, n, field, runtime, &mut new_vars_name);
 
             Ok((
                 result,
@@ -4481,17 +4480,7 @@ fn execute_infix_op_autocomplete(
             ))
 
         }
-        // ShiftRN =>{}
-        // LesserEqN =>{}
-        // GreaterEqN =>{}
-        // LesserN => {}
-        // GreaterN => {}
-        // EqN => {}
-        // NotEqN =>{}
-        // BitOrN => {}
-        // BitAndN => {}
-        // BitXorN =>{}
-        _=>unreachable!()
+        
      };
     treat_result_with_arithmetic_error(
         possible_result,

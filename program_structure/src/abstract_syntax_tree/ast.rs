@@ -291,7 +291,9 @@ pub enum Expression {
         meta: Meta,
         lhe: Box<Expression>,
         infix_op: ExpressionInfixOpcode,
+        size: Option<Box<Expression>>,
         rhe: Box<Expression>,
+        
     },
     PrefixOp {
         meta: Meta,
@@ -387,19 +389,9 @@ pub enum ExpressionInfixOpcode {
     BoolAnd,
     BitOr,
     BitAnd,
-    BitXor,
-    ShiftLN,
-    ShiftRN,
-    LesserEqN,
-    GreaterEqN,
-    LesserN,
-    GreaterN,
-    EqN,
-    NotEqN,
-    BitOrN,
-    BitAndN,
-    BitXorN
+    BitXor
 }
+
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum ExpressionPrefixOpcode {

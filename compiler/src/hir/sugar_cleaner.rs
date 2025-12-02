@@ -311,36 +311,45 @@ fn extend_infix(expr: &mut Expression, state: &mut State, context: &Context) -> 
     use program_structure::ast::ExpressionInfixOpcode::Pow;
     use program_structure::ast::ExpressionInfixOpcode::Add;
     use num_bigint_dig::BigInt;
-    if let InfixOp { lhe, rhe, infix_op, .. } = expr {
+    if let InfixOp { lhe, rhe, infix_op, size, .. } = expr {
         let mut lh_expand = extend_expression(lhe, state, context);
         let mut rh_expand = extend_expression(rhe, state, context);
+        let mut size_expand = extend_expression(size, state, context);
+        
         lh_expand.initializations.append(&mut rh_expand.initializations);
+        
         let mut extended = lh_expand;
         let mut expr = vec![*lhe.clone(), *rhe.clone()];
         sugar_filter(&mut expr, state, &mut extended.initializations);
 
         let mut expr_rhe = expr.pop().unwrap();
         let expr_lhe = expr.pop().unwrap();
+        let expr_size = expr.pop().unwrap();
 
         // remove when fixed fr in wasm
+        
         if *infix_op == Pow{
-            match (&expr_rhe, &expr_lhe){
-                (Variable{name: name_1, ..}, Variable{name: name_2, ..})
-                        if name_1 == name_2 =>{
+            match (&expr_rhe, &expr_size, &expr_lhe){
+                (Variable{name: name_1, ..}, exp, Variable{name: name_2, ..})
+                     //let size_new = if size.is_none() {None} else{Some(Box::new(size.unwrap()))};
+                        
+                    if name_1 == name_2 =>{
                     expr_rhe = Expression::InfixOp{
                         meta: rhe.get_meta().clone(),
                         lhe: Box::new(Number(rhe.get_meta().clone(), BigInt::from(0))),
                         rhe: Box::new(expr_rhe),
                         infix_op: Add,
+                        size: Some(Boexp,
                     };
                 }
-                (Number(_, value_1 ), Number(_, value_2))
+                (Number(_, value_1 ), exp, Number(_, value_2))
                         if value_1 == value_2 =>{
                     expr_rhe = Expression::InfixOp{
                         meta: rhe.get_meta().clone(),
                         lhe: Box::new(Number(rhe.get_meta().clone(), BigInt::from(0))),
                         rhe: Box::new(expr_rhe),
                         infix_op: Add,
+                        size: exp,
                     };
                 }
                 _ =>{
@@ -351,11 +360,12 @@ fn extend_infix(expr: &mut Expression, state: &mut State, context: &Context) -> 
 
         *rhe = Box::new(expr_rhe);
         *lhe = Box::new(expr_lhe);
-
+        *size = Option::Box::new(expr_size);    
         
         } else{
             *rhe = Box::new(expr_rhe);
             *lhe = Box::new(expr_lhe);
+            *size = Option::Box::new(expr_size);    
         }
 
         // just to solve the case of X ** X in wasm

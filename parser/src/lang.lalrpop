@@ -644,10 +644,15 @@ TwoElemsListable: Vec<Expression> = {
 
 InfixOpTier<Op,NextTier> : Expression = {
     <s:@L> <lhe:InfixOpTier<Op,NextTier>> <infix_op:Op> <rhe:NextTier> <e: @R>
-    => build_infix(Meta::new(s,e),lhe,infix_op,rhe),
+    => build_infix(Meta::new(s,e),lhe,infix_op, None,rhe),
+
+    <s:@L> <lhe:InfixOpTier<Op,NextTier>> <infix_op:Op> <size: (ParseExpression)> <rhe:NextTier> <e: @R>
+    => build_infix(Meta::new(s,e),lhe,infix_op, Some(size), rhe),
 
     NextTier
 };
+
+
 
 PrefixOpTier<Op,NextTier >: Expression = {
     <s:@L> <prefix_op:Op> <rhe:NextTier> <e:@R>
@@ -805,7 +810,10 @@ ParseBitAnd : ExpressionInfixOpcode = {
 
 ParseShift : ExpressionInfixOpcode = {
     "<<" => ExpressionInfixOpcode::ShiftL,
+    "<<n" => ExpressionInfixOpcode::ShiftLN,
+
     ">>" => ExpressionInfixOpcode::ShiftR,
+    ">>n" ==> 
 };
 
 ParseAddAndSub : ExpressionInfixOpcode = {

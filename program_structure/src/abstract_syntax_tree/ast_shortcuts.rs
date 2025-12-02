@@ -19,22 +19,23 @@ pub fn assign_with_op_shortcut(
     op: ExpressionInfixOpcode,
     meta: Meta,
     variable: (String, Vec<Access>),
+    size: Option<Expression>,
     rhe: Expression,
 ) -> Statement {
     let (var, access) = variable;
     let variable = build_variable(meta.clone(), var.clone(), access.clone());
-    let infix = build_infix(meta.clone(), variable, op, rhe);
+    let infix = build_infix(meta.clone(), variable, op, size, rhe);
     build_substitution(meta, var, access, AssignOp::AssignVar, infix)
 }
 
 pub fn plusplus(meta: Meta, variable: (String, Vec<Access>), field: &BigInt) -> Statement {
     let one = build_number(meta.clone(), BigInt::from(1), field);
-    assign_with_op_shortcut(ExpressionInfixOpcode::Add, meta, variable, one)
+    assign_with_op_shortcut(ExpressionInfixOpcode::Add, meta, variable,None, one)
 }
 
 pub fn subsub(meta: Meta, variable: (String, Vec<Access>), field: &BigInt) -> Statement {
     let one = build_number(meta.clone(), BigInt::from(1), field);
-    assign_with_op_shortcut(ExpressionInfixOpcode::Sub, meta, variable, one)
+    assign_with_op_shortcut(ExpressionInfixOpcode::Sub, meta, variable,None, one)
 }
 
 pub fn for_into_while(
