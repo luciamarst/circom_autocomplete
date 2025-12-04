@@ -346,6 +346,7 @@ fn remove_anonymous_from_statement(
                 let next_access = Expression::InfixOp{
                     meta: meta.clone(),
                     infix_op: ExpressionInfixOpcode::Add,
+                    size: None,
                     lhe: Box::new(var_access),
                     rhe: Box::new(Expression::Number(meta.clone(),  BigInt::from(1))),
                 };

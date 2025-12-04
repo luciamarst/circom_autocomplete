@@ -1056,12 +1056,18 @@ fn execute_expression(
             }
             
         }
-        InfixOp { meta, lhe, infix_op, rhe, .. } => {
+        InfixOp { meta, lhe, infix_op, size, rhe, .. } => {
             let l_fold = execute_expression(lhe, program_archive, runtime, flags)?;
             let r_fold = execute_expression(rhe, program_archive, runtime, flags)?;
-            let size_fold = execute_expression(size, program_archive, runtime, flags)?;
+            
+            let size = if size.is_some(){
+                let size_fold = execute_expression(size.as_ref().unwrap(), program_archive, runtime, flags)?;
+                let s_value = safe_unwrap_to_single_arithmetic_expression(size_fold, line!());
+                cast_index(&s_value)
+            } else{
+                None
+            };
                 
-                //TODO: FATAL        
                 let mut l_constraints: Vec<_> = match &l_fold.new_constraints {
                     Some(value) => value.clone(),
                     None=> vec![]
@@ -1084,9 +1090,6 @@ fn execute_expression(
 
             let l_value = safe_unwrap_to_single_arithmetic_expression(l_fold, line!());
             let r_value = safe_unwrap_to_single_arithmetic_expression(r_fold, line!());
-            let s_value = safe_unwrap_to_single_arithmetic_expression(size_fold, line!());
-
-            let size = s_value.cast_index();
 
             if runtime.is_autocomplete{
 

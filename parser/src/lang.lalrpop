@@ -643,13 +643,15 @@ TwoElemsListable: Vec<Expression> = {
 };
 
 InfixOpTier<Op,NextTier> : Expression = {
-    <s:@L> <lhe:InfixOpTier<Op,NextTier>> <infix_op:Op> <rhe:NextTier> <e: @R>
-    => build_infix(Meta::new(s,e),lhe,infix_op, None,rhe),
-
-    <s:@L> <lhe:InfixOpTier<Op,NextTier>> <infix_op:Op> <size: (ParseExpression)> <rhe:NextTier> <e: @R>
-    => build_infix(Meta::new(s,e),lhe,infix_op, Some(size), rhe),
+    <s:@L> <lhe:InfixOpTier<Op,NextTier>> <infix_op:Op><size: SizeOperator> <rhe:NextTier> <e: @R>
+    => build_infix(Meta::new(s,e),lhe,infix_op, size,rhe),
 
     NextTier
+};
+
+SizeOperator: Option<Expression> ={
+    "_(" <size: ParseExpression> ")" => Some(size),
+    => None
 };
 
 
@@ -810,10 +812,7 @@ ParseBitAnd : ExpressionInfixOpcode = {
 
 ParseShift : ExpressionInfixOpcode = {
     "<<" => ExpressionInfixOpcode::ShiftL,
-    "<<n" => ExpressionInfixOpcode::ShiftLN,
-
     ">>" => ExpressionInfixOpcode::ShiftR,
-    ">>n" ==> 
 };
 
 ParseAddAndSub : ExpressionInfixOpcode = {

@@ -977,17 +977,6 @@ fn translate_infix_operator(op: ExpressionInfixOpcode) -> OperatorType {
         BitOr => OperatorType::BitOr,
         BitAnd => OperatorType::BitAnd,
         BitXor => OperatorType::BitXor,
-        ShiftLN => OperatorType::ShiftLN,
-        ShiftRN => OperatorType::ShiftRN,
-        LesserEqN => OperatorType::LesserEqN,
-        GreaterEqN => OperatorType::GreaterEqN,
-        LesserN => OperatorType::LesserN,
-        GreaterN => OperatorType::GreaterN,
-        EqN => OperatorType::EqN,
-        NotEqN => OperatorType::NotEqN,
-        BitOrN => OperatorType::BitOrN,
-        BitAndN => OperatorType::BitAndN,
-        BitXorN => OperatorType::BitXorN
     }
 }
 

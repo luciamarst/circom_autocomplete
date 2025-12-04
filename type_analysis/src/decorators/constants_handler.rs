@@ -426,8 +426,13 @@ fn expand_expression(expr: Expression, environment: &ExpressionHolder) -> Expres
         ArrayInLine { meta, values } => expand_array(meta, values, environment),
         UniformArray { meta, value, dimension} => expand_uniform_array(meta, *value, *dimension, environment),
         Call { id, meta, args } => expand_call(id, meta, args, environment),
-        InfixOp { meta, lhe, rhe, infix_op } => {
-            expand_infix(meta, *lhe, infix_op, *rhe, environment)
+        InfixOp { meta, lhe, size, rhe, infix_op } => {
+            let size_unfolded = if size.is_some(){
+                Some(*size.unwrap())
+            } else{
+                None
+            };
+            expand_infix(meta, *lhe, infix_op, size_unfolded, *rhe, environment)
         }
         PrefixOp { meta, prefix_op, rhe } => expand_prefix(meta, prefix_op, *rhe, environment),
         ParallelOp { meta, rhe } => expand_parallel(meta, *rhe, environment),
@@ -495,12 +500,18 @@ fn expand_infix(
     meta: Meta,
     old_lhe: Expression,
     infix_op: ExpressionInfixOpcode,
+    old_size: Option<Expression>,
     old_rhe: Expression,
     environment: &ExpressionHolder,
 ) -> Expression {
     let lhe = expand_expression(old_lhe, environment);
     let rhe = expand_expression(old_rhe, environment);
-    build_infix(meta, lhe, infix_op, rhe)
+    let size = if old_size.is_some(){
+        Some(expand_expression(old_size.unwrap(), environment))
+    } else{
+        None
+    };
+    build_infix(meta, lhe, infix_op, size, rhe)
 }
 
 fn expand_prefix(
