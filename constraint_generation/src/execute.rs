@@ -142,7 +142,8 @@ enum ExecutionError {
     UnknownTemplate,
     NonValidTagAssignment,
     FalseAssert,
-    ArraySizeTooBig
+    ArraySizeTooBig,
+    AutocompleteMood,
 }
 
 enum ExecutionWarning {
@@ -429,7 +430,7 @@ fn execute_statement(
                     let constrained = possible_constraint.unwrap();
 
                     let mut needs_double_arrow = Vec::new();
-
+                    
                     for i in 0..AExpressionSlice::get_number_of_cells(&constrained.right){
                         let value_right = treat_result_with_memory_error(
                             AExpressionSlice::access_value_by_index(&constrained.right, i),
@@ -447,7 +448,16 @@ fn execute_statement(
                         )?;
 
                         if let AssignOp::AssignConstraintSignal = op {
-                            if value_right.is_nonquadratic() {
+                            if runtime.is_autocomplete {
+                                let err = Result::Err(ExecutionError::AutocompleteMood);
+                                treat_result_with_execution_error(
+                                    err,
+                                    meta,
+                                    &mut runtime.runtime_errors,
+                                    &runtime.call_trace,
+                                )?;
+                            }
+                            else if value_right.is_nonquadratic(){
                                 let err = Result::Err(ExecutionError::NonQuadraticConstraint);
                                 treat_result_with_execution_error(
                                     err,
@@ -471,7 +481,8 @@ fn execute_statement(
                                 _ => unreachable!()
                             };
                             
-                            if !value_right.is_nonquadratic() && !node.is_custom_gate {
+                            if !value_right.is_nonquadratic() && !node.is_custom_gate && !runtime.is_autocomplete { //Si estamos en autocomplete, no hace falta
+                                // que luego veamos los <-- operadores para cambiarlos a <==
                                 needs_double_arrow.push(signal_name);
                             }
                         }
@@ -761,6 +772,10 @@ fn execute_statement(
         Assert { arg, meta, .. } => {
 
             // TODO: deberiamos meterlo si estamos como autocomplete como un ===?
+
+            // if(runtime.is_autocomplete){
+
+            // }
 
             let f_result = execute_expression(arg, program_archive, runtime, flags)?;
             let arith = safe_unwrap_to_single_arithmetic_expression(f_result, line!());
@@ -1068,25 +1083,25 @@ fn execute_expression(
                 None
             };
                 
-                let mut l_constraints: Vec<_> = match &l_fold.new_constraints {
-                    Some(value) => value.clone(),
-                    None=> vec![]
-                };
+            let mut l_constraints: Vec<_> = match &l_fold.new_constraints {
+                Some(value) => value.clone(),
+                None=> vec![]
+            };
 
-                let mut l_signals=  match &l_fold.new_signals {
-                    Some(value) => value.clone(),
-                    None=> vec![]
-                };
+            let mut l_signals=  match &l_fold.new_signals {
+                Some(value) => value.clone(),
+                None=> vec![]
+            };
 
-                let mut r_constraints= match &r_fold.new_constraints{
-                    Some(value) => value.clone(),
-                    None=> vec![]
-                };
+            let mut r_constraints= match &r_fold.new_constraints{
+                Some(value) => value.clone(),
+                None=> vec![]
+            };
 
-                let mut r_signals= match &r_fold.new_signals{
-                    Some(value) => value.clone(),
-                    None=> vec![]
-                };
+            let mut r_signals= match &r_fold.new_signals{
+                Some(value) => value.clone(),
+                None=> vec![]
+            };
 
             let l_value = safe_unwrap_to_single_arithmetic_expression(l_fold, line!());
             let r_value = safe_unwrap_to_single_arithmetic_expression(r_fold, line!());
@@ -1117,7 +1132,8 @@ fn execute_expression(
                 l_signals.extend(r_signals);
 
                 let r_slice = AExpressionSlice::new(&result_value);
-                    FoldedValue { 
+                
+                FoldedValue { 
                     arithmetic_slice: Option::Some(r_slice), 
                     new_constraints: Option::Some(l_constraints),
                     new_signals: Option::Some(l_signals),
@@ -1178,6 +1194,7 @@ fn execute_expression(
     };
     let expr_id = expr.get_meta().elem_id;
     let res_p = res.arithmetic_slice.clone();
+   
     if let Some(slice) = res_p {
         if slice.is_single() && can_be_simplified{
             let value = AExpressionSlice::unwrap_to_single(slice);
@@ -5108,6 +5125,10 @@ fn treat_result_with_execution_error<C>(
                 ),
                 TagAssignmentInUnknown => Report::error(
                     "There are tag assignments depending on the value of a condition that can be unknown during the constraint generation phase".to_string(),
+                    ReportCode::RuntimeError,
+                ),
+                AutocompleteMood => Report::error(
+                    "You are working in AUTOCOMPLETE MOOD. Remember that you have to use the <--/=== operators to substitutions, assignments, or establishing restrictions".to_string(),
                     ReportCode::RuntimeError,
                 )
             };
