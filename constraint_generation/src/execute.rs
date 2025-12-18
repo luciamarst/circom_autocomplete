@@ -143,12 +143,12 @@ enum ExecutionError {
     NonValidTagAssignment,
     FalseAssert,
     ArraySizeTooBig,
-    AutocompleteMood,
 }
 
 enum ExecutionWarning {
     CanBeQuadraticConstraintSingle(),
     CanBeQuadraticConstraintMultiple(Vec<String>),
+    AutocompleteMood(Vec<String>),
 }
 
 
@@ -430,7 +430,8 @@ fn execute_statement(
                     let constrained = possible_constraint.unwrap();
 
                     let mut needs_double_arrow = Vec::new();
-                    
+                    let mut must_single_arrow = Vec::new();
+
                     for i in 0..AExpressionSlice::get_number_of_cells(&constrained.right){
                         let value_right = treat_result_with_memory_error(
                             AExpressionSlice::access_value_by_index(&constrained.right, i),
@@ -449,13 +450,13 @@ fn execute_statement(
 
                         if let AssignOp::AssignConstraintSignal = op {
                             if runtime.is_autocomplete {
-                                let err = Result::Err(ExecutionError::AutocompleteMood);
-                                treat_result_with_execution_error(
-                                    err,
-                                    meta,
-                                    &mut runtime.runtime_errors,
-                                    &runtime.call_trace,
-                                )?;
+                                 let signal_name = match signal_left{
+                                    AExpr::Signal { symbol } =>{
+                                        symbol
+                                    },
+                                    _ => unreachable!()
+                                };
+                                must_single_arrow.push(signal_name);
                             }
                             else if value_right.is_nonquadratic(){
                                 let err = Result::Err(ExecutionError::NonQuadraticConstraint);
@@ -512,6 +513,17 @@ fn execute_statement(
                             )?;
                         }
                     }
+
+                    if !must_single_arrow.is_empty() {
+                        let err: Result<(),ExecutionWarning>  = Result::Err(ExecutionWarning::AutocompleteMood(must_single_arrow));
+                        treat_result_with_execution_warning(
+                            err, 
+                            meta, 
+                            &mut runtime.runtime_errors, 
+                            &runtime.call_trace
+                        )?;
+                    }
+                    
                 }   
             } 
             Option::None
@@ -5166,6 +5178,21 @@ fn treat_result_with_execution_warning<C>(
 
                     let msg = format!(
                         "Consider using <== instead of <-- for some of positions of the array of signals being assigned.\n The constraints representing the assignment of the positions {} satisfy the R1CS format and can be added to the constraint system.",
+                        msg_positions
+                    );
+                    Report::warning(
+                        msg,
+                        ReportCode::RuntimeWarning,
+                    )
+                },
+                AutocompleteMood(positions) =>{
+                    let mut msg_positions = positions[0].clone();
+                    for i in 1..positions.len(){
+                        msg_positions = format!("{}, {}", msg_positions, positions[i].clone()) 
+                    };
+
+                    let msg = format!(
+                        "You must change <== to the <-- operator for the positions {}, since you are currently in AUTOCOMPLETE mode, which works with the <--/=== operators for assignment, substitution, and adding constraints.",
                         msg_positions
                     );
                     Report::warning(
