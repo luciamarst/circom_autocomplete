@@ -389,7 +389,9 @@ fn execute_statement(
                ExecutedStructure::None
             };
             
-
+            let constraints = r_folded.new_constraints.clone();
+            let signals = r_folded.new_signals.clone();
+           
             let possible_constraint =
                 perform_assign(
                     meta, 
@@ -403,6 +405,23 @@ fn execute_statement(
                     flags
                 )?;
 
+            
+            if(runtime.is_autocomplete){
+                print!("Substitution: Is autocomplete: Adding new signals\n");
+                let vec_empty = vec![];
+                let vec_empty2 = vec![];
+                for s in signals.unwrap(){
+                        print!("Signal: {}\n", s);
+                        execute_signal_declaration(
+                        &s,
+                        &vec_empty,
+                        &vec_empty2,
+                        SignalType::Intermediate,
+                        &mut runtime.environment,
+                        (actual_node),
+                    )
+                }
+            }
 
             if let Option::Some(node) = actual_node {
 
@@ -412,7 +431,7 @@ fn execute_statement(
                 // Para las variables!!! Ojo este  caso, pensarlo mejor -> meter las constraints nuevas al template y añadir las nuevas señales?
                 // No debería aparecer nunca el ===, si pasa eso es un error
 
-                if *op == AssignOp::AssignConstraintSignal || (*op == AssignOp::AssignSignal && flags.inspect){
+                if *op == AssignOp::AssignConstraintSignal || (*op == AssignOp::AssignSignal && flags.inspect) || (*op == AssignOp::AssignSignal && runtime.is_autocomplete){
                     debug_assert!(possible_constraint.is_some());
                     
                     if *op == AssignOp::AssignConstraintSignal && runtime.block_type == BlockType::Unknown{
@@ -426,7 +445,15 @@ fn execute_statement(
                         )?;
                     }
                     
-                    
+                   
+                    if(runtime.is_autocomplete){
+                        print!("Substitution: Is autocomplete: Adding new constraint\n");
+                        for c in constraints.unwrap(){
+                            c.print_pretty_constraint();
+                            node.add_constraint(c);
+                        }
+                    }
+
                     let constrained = possible_constraint.unwrap();
 
                     let mut needs_double_arrow = Vec::new();
@@ -474,16 +501,23 @@ fn execute_statement(
                                 node.add_constraint(ctr);
                             }
                         } else if let AssignOp::AssignSignal = op {// needs fix, check case arrays
-                            //debug_assert!(possible_constraint.is_some());
-                            let signal_name = match signal_left{
-                                AExpr::Signal { symbol } =>{
-                                    symbol
-                                },
-                                _ => unreachable!()
-                            };
+                            //debug_assert!(possible_constraint.is_some())
                             
-                            if !value_right.is_nonquadratic() && !node.is_custom_gate && !runtime.is_autocomplete { //Si estamos en autocomplete, no hace falta
-                                // que luego veamos los <-- operadores para cambiarlos a <==
+                            if(runtime.is_autocomplete){
+                                let p = runtime.constants.get_p().clone();
+                                let symbol = signal_left;
+                                let expr = AExpr::sub(&symbol, &value_right, &p);
+                                let ctr = AExpr::transform_expression_to_constraint_form(expr, &p).unwrap();
+                                node.add_constraint(ctr);
+                            }
+                            else if !value_right.is_nonquadratic() && !node.is_custom_gate { //Si estamos en autocomplete, no hace falta
+                                let signal_name = match signal_left{
+                                    AExpr::Signal { symbol } =>{
+                                        symbol
+                                    },
+                                    _ => unreachable!()
+                                };
+                                    // que luego veamos los <-- operadores para cambiarlos a <==
                                 needs_double_arrow.push(signal_name);
                             }
                         }
@@ -783,9 +817,9 @@ fn execute_statement(
         }
         Assert { arg, meta, .. } => {
 
-            // TODO: deberiamos meterlo si estamos como autocomplete como un ===?
+            // // TODO: deberiamos meterlo si estamos como autocomplete como un ===?
 
-            // if(runtime.is_autocomplete){
+            // if runtime.is_autocomplete{
 
             // }
 
@@ -1406,6 +1440,7 @@ fn execute_signal_declaration(
         unreachable!();
     }
 }
+
 
 fn execute_declaration_bus(
     signal_name: &str,
