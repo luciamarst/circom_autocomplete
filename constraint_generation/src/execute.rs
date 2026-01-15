@@ -498,6 +498,7 @@ fn execute_statement(
                                 let symbol = signal_left;
                                 let expr = AExpr::sub(&symbol, &value_right, &p);
                                 let ctr = AExpr::transform_expression_to_constraint_form(expr, &p).unwrap();
+                                ctr.print_pretty_constraint();
                                 node.add_constraint(ctr);
                             }
                         } else if let AssignOp::AssignSignal = op {// needs fix, check case arrays
@@ -508,6 +509,7 @@ fn execute_statement(
                                 let symbol = signal_left;
                                 let expr = AExpr::sub(&symbol, &value_right, &p);
                                 let ctr = AExpr::transform_expression_to_constraint_form(expr, &p).unwrap();
+                                ctr.print_pretty_constraint();
                                 node.add_constraint(ctr);
                             }
                             else if !value_right.is_nonquadratic() && !node.is_custom_gate { //Si estamos en autocomplete, no hace falta
@@ -1164,9 +1166,9 @@ fn execute_expression(
                 )?;
 
                 println!("Traduciendo expresion -> añadiendo constraints: ");
-                for c in &result_constraints{
-                    c.print_pretty_constraint();
-                }
+                // for c in &result_constraints{
+                //     c.print_pretty_constraint();
+                // }
                 println!("-> Signals: ");
                 for c in &result_signals{
                     println!("***{}", c);
@@ -4014,28 +4016,37 @@ fn execute_infix_op_autocomplete(
             ))
         }
         Div =>{
-            // Operation => q_aux = l_value / r_value | New COnstraint => l_value - (r_value + q_aux) = 0
-           
-            // q_aux declaration
+                        //Operation => q_aux = l_value/r_value + r_aux | New constraint => l_value - ((r_value * q_aux) + r_aux) = 0
+
+            //q_aux declaration
             let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
-            runtime.new_added_vars += 1;
-            let q_aux = AExpr::Signal { symbol: q_aux_name.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
-            
-            // Construction of _value * q_aux operation
-            let a = AExpr::mul(r_value, &q_aux, field); // a' = b' + q'
+            runtime.new_added_vars+=1;
+            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
 
-            // Construction of new constraint: l_value - (a); a = r_value * q_aux
-            let expr_new_constraint = AExpr::sub(l_value, &a, field);
+            //r_aux declaration
+            let r_aux_name = format!("raux_{}", runtime.new_added_vars);
+            runtime.new_added_vars+=1;
+            let r_aux = AExpr::Signal{symbol: r_aux_name.clone()};
 
-            // El transform lo que hace es igualar la expresion a 0
-            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
+
+            //Construction of r_value + q_aux operation
+            let b_product_q = AExpr::mul(r_value, &q_aux, field);
+
+            //Construction of (r_value * q_aux) + r_aux operation
+            let product_plus_r = AExpr::add(&b_product_q, &r_aux, field);
+
+            //Construction of l_value - ((r_value * q_aux) + r_aux) constraint
+            let expr_new_constraint = AExpr::sub(l_value, &product_plus_r, field);
+
+            //COnstruction of l_value - ((r_value * q_aux) + r_aux) = 0 expresion
+            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transofmración a constraint falló.");
 
             Ok((
-                q_aux,
+                q_aux, //Se pone solo q_aux porque es la expresion principal
                 vec![new_constraint],
-                vec![q_aux_name]
+                vec![q_aux_name,r_aux_name]
             ))
-
+        
         }
         Add => {
             // New constraint =>  l_value + r_value 
@@ -4080,35 +4091,26 @@ fn execute_infix_op_autocomplete(
             ))
         }
         IntDiv =>{
-            //Operation => q_aux = l_value/r_value + r_aux | New constraint => l_value - ((r_value * q_aux) + r_aux) = 0
-
-            //q_aux declaration
+            // Operation => q_aux = l_value / r_value | New COnstraint => l_value - (r_value * q_aux) = 0
+           
+            // q_aux declaration
             let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
-            runtime.new_added_vars+=1;
-            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
+            runtime.new_added_vars += 1;
+            let q_aux = AExpr::Signal { symbol: q_aux_name.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
+            
+            // Construction of _value * q_aux operation
+            let a = AExpr::mul(r_value, &q_aux, field); // a' = b' * q'
 
-            //r_aux declaration
-            let r_aux_name = format!("raux_{}", runtime.new_added_vars);
-            runtime.new_added_vars+=1;
-            let r_aux = AExpr::Signal{symbol: r_aux_name.clone()};
+            // Construction of new constraint: l_value - (a); a = r_value * q_aux
+            let expr_new_constraint = AExpr::sub(l_value, &a, field);
 
-
-            //Construction of r_value + q_aux operation
-            let b_product_q = AExpr::mul(r_value, &q_aux, field);
-
-            //Construction of (r_value * q_aux) + r_aux operation
-            let product_plus_r = AExpr::add(&b_product_q, &r_aux, field);
-
-            //Construction of l_value - ((r_value * q_aux) + r_aux) constraint
-            let expr_new_constraint = AExpr::sub(l_value, &product_plus_r, field);
-
-            //COnstruction of l_value - ((r_value * q_aux) + r_aux) = 0 expresion
-            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transofmración a constraint falló.");
+            // El transform lo que hace es igualar la expresion a 0
+            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
 
             Ok((
-                q_aux, //Se pone solo q_aux porque es la expresion principal
+                q_aux,
                 vec![new_constraint],
-                vec![q_aux_name,r_aux_name]
+                vec![q_aux_name]
             ))
         }
         Mod => {
