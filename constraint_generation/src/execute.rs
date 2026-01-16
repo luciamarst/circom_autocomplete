@@ -58,6 +58,7 @@ struct RuntimeInformation {
     // Nuevos campos para el autocomplete
     pub is_autocomplete: bool, // si se debe aplicar o no el traducir las <-- por constraints
     pub new_added_vars: usize, // el número de variable nuevo que podemos introducir (para evitar colisiones)
+    pub conditional_expression: Option<AExpr>, // en caso de estar en una rama condicional, es la condición que debe ser true para que lo recorramos
 }
 impl RuntimeInformation {
     pub fn new(current_file: FileID, id_max: usize, prime: &String) -> RuntimeInformation {
@@ -75,12 +76,13 @@ impl RuntimeInformation {
             conditions_state: Vec::new(),
             unknown_counter: 0,
             is_autocomplete: false,
-            new_added_vars: 0
+            new_added_vars: 0,
+            conditional_expression: None
         }
     }
 }
 
-// TODO: esto es lo que se devuelve al ejecutar una expresión. Antes solo nos devolvía el resultado de la expresión,
+// Esto es lo que se devuelve al ejecutar una expresión. Antes solo nos devolvía el resultado de la expresión,
 // ahora también devolvemos las nuevas constraints a añadir y las nuevas variables
 struct FoldedValue {
     pub arithmetic_slice: Option<AExpressionSlice>,
@@ -89,7 +91,7 @@ struct FoldedValue {
     pub bus_node_pointer: Option<NodePointer>,
     pub is_parallel: Option<bool>,
     pub tags: Option<TagWire>,
-    // TODO: nuevos campos añadidos para las constraints y señales añadidas en autocomplete
+    // nuevos campos añadidos para las constraints y señales añadidas en autocomplete
     pub new_constraints: Option<Vec<Constraint>>,
     pub new_signals: Option<Vec<String>>,
 }
@@ -378,7 +380,6 @@ fn execute_statement(
                 };
             
             
-            // TODO: 
             // execute expression nos tiene que devolver la expresión del resultado, así como las constraints y señales nuevas que se hayan añadido
             
             let r_folded = execute_expression(rhe, program_archive, runtime, flags)?;
@@ -425,10 +426,9 @@ fn execute_statement(
 
             if let Option::Some(node) = actual_node {
 
-                // TODO:
                 // Si estamos en modo autocomplete:
                 // ---> Si se ha usado el --> entonces lo que hacemos es añadir las constraints nuevas al template, añadir las nuevas señales y meter el possible contraint que nos ha devuelto el perform_assign
-                // Para las variables!!! Ojo este  caso, pensarlo mejor -> meter las constraints nuevas al template y añadir las nuevas señales?
+                // TODO: Para las variables!!! Ojo este  caso, pensarlo mejor -> meter las constraints nuevas al template y añadir las nuevas señales?
                 // No debería aparecer nunca el ===, si pasa eso es un error
 
                 if *op == AssignOp::AssignConstraintSignal || (*op == AssignOp::AssignSignal && flags.inspect) || (*op == AssignOp::AssignSignal && runtime.is_autocomplete){
@@ -476,6 +476,7 @@ fn execute_statement(
                         )?;
 
                         if let AssignOp::AssignConstraintSignal = op {
+                            // TODO: ojo, esto para que es?
                             if runtime.is_autocomplete {
                                  let signal_name = match signal_left{
                                     AExpr::Signal { symbol } =>{
@@ -504,12 +505,16 @@ fn execute_statement(
                         } else if let AssignOp::AssignSignal = op {// needs fix, check case arrays
                             //debug_assert!(possible_constraint.is_some())
                             
-                            if(runtime.is_autocomplete){
+                            if runtime.is_autocomplete{
                                 let p = runtime.constants.get_p().clone();
                                 let symbol = signal_left;
                                 let expr = AExpr::sub(&symbol, &value_right, &p);
                                 let ctr = AExpr::transform_expression_to_constraint_form(expr, &p).unwrap();
                                 ctr.print_pretty_constraint();
+
+                                // TODO: falta por tener en cuenta si estamos en un condicional
+                                // o si no lo estamos. Lo que tenemos es que o bien ctr es cierta
+                                // o bien el condicional no es cierto -> esa es nuestra nueva ctr
                                 node.add_constraint(ctr);
                             }
                             else if !value_right.is_nonquadratic() && !node.is_custom_gate { //Si estamos en autocomplete, no hace falta
@@ -566,7 +571,7 @@ fn execute_statement(
         }
         ConstraintEquality { meta, lhe, rhe, .. } => {
 
-            // TODO: No debería aparecer en el autocomplete, no preocuparnos por ello
+            // TODO: lo dejamos usar en autocomplete o no?
 
             debug_assert!(actual_node.is_some());
 
@@ -1490,7 +1495,7 @@ fn execute_bus_declaration(
                     
                     let tag_wire = TagWire{
                         tags,
-                        fields: None // TODO: FILL THE TAGS
+                        fields: None 
                     };
                     environment_shortcut_add_bus_input(environment, bus_name, dimensions, &tag_wire);
                 }
@@ -2609,6 +2614,7 @@ fn execute_conditional_statement(
     let ae_cond = safe_unwrap_to_single_arithmetic_expression(f_cond, line!());
     let possible_cond_bool_value =
         AExpr::get_boolean_equivalence(&ae_cond, runtime.constants.get_p());
+
     if let Some(cond_bool_value) = possible_cond_bool_value {
         let (ret_value, can_simplify) = match false_case {
             Option::Some(else_stmt) if !cond_bool_value => {
@@ -2619,14 +2625,16 @@ fn execute_conditional_statement(
         };
         Result::Ok((ret_value, can_simplify, Option::Some(cond_bool_value)))
     } else {
+
+        // TODO: cambiar esta parte. Ahora lo que hacemos
+        // es meter el valor de nuestra variable en la conditional_expression
+        // Si antes no habia nada -> se queda esa variable
+        // Si antes habia una -> la multiplicamos por la nueva para tener un and 
+
+
         let previous_block_type = runtime.block_type;
         runtime.block_type = BlockType::Unknown;
-        // TODO: here instead of executing both branches what we do is to store the values
-        // that we assign in each one of the branches and assign later: if we assign in both 
-        // of them a signal we return an error. If we assign in just one then we dont return error
-        // (maybe a warning indicating that the variable may not get assigned in the if)
-        
-        
+
         // We update the conditions state of the execution
         runtime.conditions_state.push((runtime.unknown_counter, true));
         runtime.unknown_counter+=1;
@@ -2665,6 +2673,7 @@ fn execute_conditional_statement(
             }
         }
         // remove the last condition added
+        // TODO: aqui volvemos a poner el expression_condition al valor que tuvieramos antes
         runtime.conditions_state.pop();
         runtime.block_type = previous_block_type;
         return Result::Ok((ret_value, can_simplify, Option::None));
