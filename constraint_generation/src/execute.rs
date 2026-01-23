@@ -54,7 +54,7 @@ struct RuntimeInformation {
     pub environment: ExecutionEnvironment,
     pub exec_program: ExecutedProgram,
     pub anonymous_components: AnonymousComponentsInfo,
-    // TODO:
+    // TODO IF:
     // Nuevos campos para el autocomplete
     pub is_autocomplete: bool, // si se debe aplicar o no el traducir las <-- por constraints
     pub new_added_vars: usize, // el número de variable nuevo que podemos introducir (para evitar colisiones)
@@ -390,9 +390,25 @@ fn execute_statement(
                ExecutedStructure::None
             };
             
-            let constraints = r_folded.new_constraints.clone();
-            let signals = r_folded.new_signals.clone();
+            let constraints = match &r_folded.new_constraints{
+                None=>{
+                    vec![]
+                },
+                Some(value)=>{
+                    value.clone()
+                }
+            };
+
+            let signals = match &r_folded.new_signals{
+                None=>{
+                    vec![]
+                },
+                Some(value)=>{
+                    value.clone()
+                }
+            };
            
+            
             let possible_constraint =
                 perform_assign(
                     meta, 
@@ -411,7 +427,7 @@ fn execute_statement(
                 print!("Substitution: Is autocomplete: Adding new signals\n");
                 let vec_empty = vec![];
                 let vec_empty2 = vec![];
-                for s in signals.unwrap(){
+                for s in signals{
                         print!("Signal: {}\n", s);
                         execute_signal_declaration(
                         &s,
@@ -448,7 +464,7 @@ fn execute_statement(
                    
                     if(runtime.is_autocomplete){
                         print!("Substitution: Is autocomplete: Adding new constraint\n");
-                        for c in constraints.unwrap(){
+                        for c in constraints{
                             c.print_pretty_constraint();
                             node.add_constraint(c);
                         }
@@ -476,7 +492,6 @@ fn execute_statement(
                         )?;
 
                         if let AssignOp::AssignConstraintSignal = op {
-                            // TODO: ojo, esto para que es?
                             if runtime.is_autocomplete {
                                  let signal_name = match signal_left{
                                     AExpr::Signal { symbol } =>{
@@ -509,12 +524,22 @@ fn execute_statement(
                                 let p = runtime.constants.get_p().clone();
                                 let symbol = signal_left;
                                 let expr = AExpr::sub(&symbol, &value_right, &p);
-                                let ctr = AExpr::transform_expression_to_constraint_form(expr, &p).unwrap();
-                                ctr.print_pretty_constraint();
+                                
+                                let cond = runtime.conditional_expression.clone();
+                                
+                                let ctr = match cond {
+                                    None=>{
+                                        AExpr::transform_expression_to_constraint_form(expr, &p).unwrap()
 
-                                // TODO: falta por tener en cuenta si estamos en un condicional
-                                // o si no lo estamos. Lo que tenemos es que o bien ctr es cierta
-                                // o bien el condicional no es cierto -> esa es nuestra nueva ctr
+                                    },
+                                    Some(cond)=>{
+                                        let mul = AExpr::mul(&cond, &expr, &p);
+                                        AExpr::transform_expression_to_constraint_form(mul, &p).unwrap()
+                                    }
+
+                                };
+
+                                ctr.print_pretty_constraint();
                                 node.add_constraint(ctr);
                             }
                             else if !value_right.is_nonquadratic() && !node.is_custom_gate { //Si estamos en autocomplete, no hace falta
@@ -2611,7 +2636,16 @@ fn execute_conditional_statement(
     flags: FlagsExecution,
 ) -> Result<(Option<FoldedValue>, bool, Option<bool>), ()> {
     let f_cond = execute_expression(condition, program_archive, runtime, flags)?;
+    let mut constraints = vec![];
+    let mut signals = vec![];
+    if runtime.is_autocomplete{
+        constraints = f_cond.new_constraints.clone().unwrap();
+        signals = f_cond.new_signals.clone().unwrap();
+    }
     let ae_cond = safe_unwrap_to_single_arithmetic_expression(f_cond, line!());
+    
+
+
     let possible_cond_bool_value =
         AExpr::get_boolean_equivalence(&ae_cond, runtime.constants.get_p());
 
@@ -2630,6 +2664,32 @@ fn execute_conditional_statement(
         // es meter el valor de nuestra variable en la conditional_expression
         // Si antes no habia nada -> se queda esa variable
         // Si antes habia una -> la multiplicamos por la nueva para tener un and 
+        if runtime.is_autocomplete{
+            if(runtime.is_autocomplete){
+                print!("Conditional: Is autocomplete: Adding new constraint\n");
+                for c in constraints{
+                    c.print_pretty_constraint();
+                    actual_node.as_mut().unwrap().add_constraint(c);
+                }
+                
+                print!("Conditional: Is autocomplete: Adding new signals\n");
+                let vec_empty = vec![];
+                let vec_empty2 = vec![];
+                for s in signals{
+                        print!("Signal: {}\n", s);
+                        execute_signal_declaration(
+                        &s,
+                        &vec_empty,
+                        &vec_empty2,
+                        SignalType::Intermediate,
+                        &mut runtime.environment,
+                        (actual_node),
+                    )
+                }
+                
+            }
+
+        }
 
 
         let previous_block_type = runtime.block_type;
@@ -2638,13 +2698,54 @@ fn execute_conditional_statement(
         // We update the conditions state of the execution
         runtime.conditions_state.push((runtime.unknown_counter, true));
         runtime.unknown_counter+=1;
+        let previous_conditional_expression = runtime.conditional_expression.clone();
+        let mut expr_signal= AExpr::Number{value: BigInt::from(1)};
 
+
+        if runtime.is_autocomplete{
+            let field: &BigInt = &runtime.constants.get_p().clone();
+            
+            match &previous_conditional_expression{
+                None=>{
+                    runtime.conditional_expression = Some(ae_cond);
+                },
+                Some(cond)=>{
+                    let cond_mul: ArithmeticExpressionGen<String> = AExpr::mul(previous_conditional_expression.as_ref().unwrap(), &cond, field);
+                    let new_signal = format!("newaux_{}", runtime.new_added_vars);
+                    let vec_empty = vec![];
+                    let vec_empty2 = vec![];
+                    execute_signal_declaration(
+                        &new_signal,
+                        &vec_empty,
+                        &vec_empty2,
+                        SignalType::Intermediate,
+                        &mut runtime.environment,
+                        (actual_node),
+                    );
+                    runtime.new_added_vars += 1;
+                    
+                    expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
+                    let expr_new_constraint = AExpr::sub(&cond_mul, &expr_signal, field);
+                    let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
+                    
+                    actual_node.as_mut().unwrap().add_constraint(new_constraint);
+                }
+            }
+        }
         let (mut ret_value, mut can_simplify) = execute_statement(true_case, program_archive, runtime, actual_node, flags)?;
+    
+        
         if let Option::Some(else_stmt) = false_case {
             // Update the conditions state and set the last to false
             let index = runtime.conditions_state.len()-1;
             runtime.conditions_state[index].1 = false;
             
+
+            if runtime.is_autocomplete{
+                let field: &BigInt = &runtime.constants.get_p().clone();
+                let cond_sub: ArithmeticExpressionGen<String> = AExpr::mul(&AExpr::Number{value: BigInt::from(1)}, &expr_signal, field);
+                runtime.conditional_expression = Some(cond_sub);
+            }
             let (else_ret, can_simplify_else) = execute_statement(else_stmt, program_archive, runtime, actual_node, flags)?;
             can_simplify &= can_simplify_else;
 
@@ -2672,8 +2773,9 @@ fn execute_conditional_statement(
 
             }
         }
+
         // remove the last condition added
-        // TODO: aqui volvemos a poner el expression_condition al valor que tuvieramos antes
+        runtime.conditional_expression = previous_conditional_expression;
         runtime.conditions_state.pop();
         runtime.block_type = previous_block_type;
         return Result::Ok((ret_value, can_simplify, Option::None));
@@ -3725,7 +3827,7 @@ fn bin_sum( //LikeBinSum funciton from circomlib but in Rust
     let mut constraints = vec![];
 
     // calculate nout = nbits((2^n - 1)*ops)
-    let max_sum = ((BigInt::from(1) << n) - 1usize) * BigInt::from(ops);
+    let max_sum = ((BigInt::from(1) << (n-1)) - 1usize) * BigInt::from(ops);
     let nout = max_sum.bits() as usize; // Número de bits de la suma máxima
 
     // ================================= Convert inputs to decimal =================================
@@ -4052,7 +4154,7 @@ fn execute_infix_op_autocomplete(
     
 ) -> Result<(AExpr,Vec<Constraint>, Vec<String>), ()> {
     use ExpressionInfixOpcode::*;
-    let field = &runtime.constants.get_p().clone();
+    let field: &BigInt = &runtime.constants.get_p().clone();
     let n: usize = if size.is_some(){size.unwrap()}  else {MAX_BITS};
     let possible_result = match infix {
         
