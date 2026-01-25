@@ -3947,7 +3947,7 @@ fn secure_less_than_eq(
     /* ==================== Explanation of the verification ====================
         1) We have to know that de MSB (most significant bit) indicates the sign of a binary number
         2) To determine if A <= B, we compute the “difference” B + (NOT A):
-            2.1) If the MSB of B - A is 0, the difference is non-negative -> A > B
+            2.1) If the MSB of B + (NOT A) is 0, the difference is non-negative -> A > B
             2.2) If the MSB is 1, the difference is negative -> A <= B
     
         The following expressions combine the above:
@@ -3958,7 +3958,7 @@ fn secure_less_than_eq(
     Ok((output, constraints))
 }
 
-// fn secure_less_than_eq_offset(    
+/* fn secure_less_than_eq_offset(    
 //     N: usize,
 //     l_value: &AExpr,
 //     r_value: &AExpr,
@@ -3996,14 +3996,10 @@ fn secure_less_than_eq(
 //         constraints
 //     ))
 
-// }
-
-
-
-
+// } */
 // REALMENTE NO ES NECESARIA, podemos usar secure_less_than y aplicarla simétricamente invirtiendo los argumentos.
 // Es decir, para a < b, secure_less_then_eq(r_value, l_value), en lugar de llamarla con l_alue, r_value
-// fn secure_less_than(
+/* fn secure_less_than(
 //     N: usize,
 //     l_value: &AExpr,
 //     r_value: &AExpr,
@@ -4080,54 +4076,11 @@ fn secure_less_than_eq(
         sub * out = 0
 
 */
-fn is_equal(
-    l_value: &AExpr,
-    r_value: &AExpr,
-    runtime: &mut RuntimeInformation,
-    new_vars_name: &mut Vec<String>,
-) -> Result<(AExpr, Vec<Constraint>), String> {
-    let mut constraints: Vec<Constraint> = vec![];
-    let field_copy = runtime.constants.get_p().clone();
-   
-    // l_value - r_value
-    let sub = AExpr::sub(l_value,r_value,  &field_copy);
-
-    // We have to difference between sub = 0 and sub != 0
-    let equal = AExpr::eq(&sub, &AExpr::Number { value: BigInt::from(0)}, &field_copy);
-    let not_eq = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &equal, &field_copy);
-   
-    // Out signal declaration
-    let out_name = format!("out_{}", runtime.new_added_vars);
-    new_vars_name.push(out_name.clone());
-    runtime.new_added_vars+=1;
-    let out = AExpr::Signal{symbol: out_name.clone()};
-
-    // sub * out
-    let sub_out = AExpr::mul(&sub, &out, &field_copy);
-    let sub_not_zero = AExpr::mul(&not_eq, &sub_out, &field_copy);
-   
-    // out * equal
-    let out_equal = AExpr::mul(&out, &equal, &field_copy);
-    let sub_left = AExpr::sub(&equal, &out_equal, &field_copy);
-    
-    // (equal - out*equal) + ((1- equal) * sub_out) = 0
-    let sub_final = AExpr::add(&sub_left, &sub_not_zero,  &field_copy);
-    let constraint = AExpr::transform_expression_to_constraint_form(sub_final,  &field_copy).unwrap();
-    constraints.push(constraint);
-
-    Ok((
-        out,
-        constraints
-    ))
-
-
-}
+    */ 
 fn reconstruct_binary_number(
     binary: &Vec<AExpr>,
     N: usize,
-    field: &BigInt,
-    runtime: &mut RuntimeInformation,
-    new_vars_name: &mut Vec<String>
+    field: &BigInt
 )-> AExpr{
 
     let mut sum_expr = AExpr::Number { value: BigInt::from(0) };
@@ -4528,27 +4481,34 @@ fn execute_infix_op_autocomplete(
             ))
         }
         Eq => {
-            // Operator l_value == r_value | New Constraint: (equal - out*equal) + (1 - equal) * (sub * out) = 0
-            let mut new_vars_name = vec![];
-            let (output, constraints_eq) = is_equal(l_value, r_value,runtime, &mut new_vars_name).unwrap();
+            // Operator l_value == r_value | New Constraint: l_value - r_value = 0
+            let mut constraints_eq = vec![];
+
+            let sub = AExpr::sub(l_value,r_value,  &field);
+            let constraint = AExpr::transform_expression_to_constraint_form(sub.clone(),  &field).unwrap();
+            constraints_eq.push(constraint);
 
             Ok((
-                output,
+                sub,
                 constraints_eq,
-                new_vars_name
+                vec![]
             ))
         }
         NotEq => {
-            // Operator l_value != r_value | New Constraint: 1 - ((equal - out*equal) + (1 - equal) * (sub * out)) = 0
+            // Operator l_value != r_value | New Constraint: l_value - r_value > 0 -> Constraint --> MSB[l_value-r_value] = 0 
             let mut new_vars_name =vec![];
+            let mut constraints_neq = vec![];
+            
+            let sub = AExpr::sub(l_value,r_value,  &field);
+            let (output_aux, constraints_greater) =  secure_less_than_eq(n, &sub,&AExpr::Number{value: BigInt::from(0)}, runtime, &mut new_vars_name).unwrap();
+            constraints_neq.extend(constraints_greater);
 
-            let (output, constraints_eq) = is_equal(l_value, r_value,runtime, &mut new_vars_name).unwrap();
-
-            let not_eq = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &output,field);
+            let constraint = AExpr::transform_expression_to_constraint_form(output_aux.clone(),  &field).unwrap();
+            constraints_neq.push(constraint);
 
             Ok((
-                not_eq,
-                constraints_eq,
+                output_aux,
+                constraints_neq,
                 new_vars_name
             ))
         }
@@ -4619,7 +4579,7 @@ fn execute_infix_op_autocomplete(
                 aux_signals_sub.push(sub_result_bit);
             }
 
-            let result = reconstruct_binary_number(&aux_signals_sub, n, field, runtime, &mut new_vars_name);
+            let result = reconstruct_binary_number(&aux_signals_sub, n, field);
 
             Ok((
                 result,
@@ -4658,7 +4618,7 @@ fn execute_infix_op_autocomplete(
                 aux_signals.push(and_result_bit);
             }
 
-            let result = reconstruct_binary_number(&aux_signals, n, field, runtime, &mut new_vars_name);
+            let result = reconstruct_binary_number(&aux_signals, n, field);
 
             Ok((
                 result,
@@ -4718,7 +4678,7 @@ fn execute_infix_op_autocomplete(
                 aux_signals_reverse.push(reverse_result_bit);
             }
 
-            let result = reconstruct_binary_number(&aux_signals_reverse, n, field, runtime, &mut new_vars_name);
+            let result = reconstruct_binary_number(&aux_signals_reverse, n, field);
 
             Ok((
                 result,
