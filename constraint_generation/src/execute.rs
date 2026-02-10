@@ -3783,7 +3783,7 @@ fn decimal_to_bits(
 
     // Creating b signals (b0,b1,b2, ..., b_{N-1})
     for _ in 0..N {
-        let b_aux_name = format!("b_{}", runtime.new_added_vars);
+        let b_aux_name  = format!("b_{}", runtime.new_added_vars);
         runtime.new_added_vars += 1;
         b_signals.push(AExpr::Signal { symbol: b_aux_name.clone() });
         new_vars_name.push(b_aux_name);
