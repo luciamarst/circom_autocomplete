@@ -4129,35 +4129,87 @@ fn execute_infix_op_autocomplete(
             ))
         }
         Div =>{
-                        //Operation => q_aux = l_value/r_value + r_aux | New constraint => l_value - ((r_value * q_aux) + r_aux) = 0
+            //Operation => q_aux = l_value/r_value + r_aux 
+            // 3 constrains are mandatory for ensure its reliability:
+            // 1. r_value != 0 -> If r_value = 0, q_value could be any value because r_value * q_aux -> 0 * q_aux, then q_aux = any value
+            // 2. 0 <= r_aux < r_value -> r_value > r_aux -> b > q (r_aux > 0 do not need comprobation because in finite field all values are greater than zero)
+            // 3. l_value - ((r_value * q_aux) + r_aux) = 0
 
-            //q_aux declaration
-            let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
-            runtime.new_added_vars+=1;
-            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
+            let mut constraints = vec![];
+            let mut new_vars_name = vec![];
+
+            // CONSTRAINT 1: r_value != 0
+            let r_inv_name = format!("rinv_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let r_inv = AExpr::Signal { symbol: r_inv_name.clone() };
+            new_vars_name.push(r_inv_name);
+
+            // Constraint: r_value * r_inv = 1 
+            // If r_value was 0, there would be no r_inv that satisfy 0 * r_inv = 1 -> 0 * r_inv != 1 
+            let mul_r_inv = AExpr::mul(r_value, &r_inv, field);
+            let not_zero_expr = AExpr::sub(&mul_r_inv, &AExpr::Number { value: BigInt::from(1) }, field);
+            let not_zero_constraint = AExpr::transform_expression_to_constraint_form(not_zero_expr, field).expect("Falló la creación de la restricción r_value != 0");
+            constraints.push(not_zero_constraint);
+
+            // CONSTRAINT 2: r_value > r_aux
 
             //r_aux declaration
             let r_aux_name = format!("raux_{}", runtime.new_added_vars);
             runtime.new_added_vars+=1;
             let r_aux = AExpr::Signal{symbol: r_aux_name.clone()};
+            new_vars_name.push(r_aux_name);
+
+           // Constraint 1.1: q < b -> r_value - r_aux > 0
+
+            let (output_aux_b_minor_zero, constraints_lesserEq) = match secure_less_than_eq(n, &r_value, &r_aux, runtime, &mut new_vars_name) {
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints.extend(constraints_lesserEq);
+
+            // secure_less_than_eq returns 0 when l_value < r_value. Then if output_aux is 0 is fulfilled
+            let c_out_constraint_one = AExpr::transform_expression_to_constraint_form(output_aux_b_minor_zero.clone(),field).unwrap();
+            constraints.push(c_out_constraint_one);
 
 
-            //Construction of r_value + q_aux operation
-            let b_product_q = AExpr::mul(r_value, &q_aux, field);
+            // CONSTRAINT 3:(r_value * q_aux) = l_value - r_aux === l_value - ((r_value * q_aux) + r_aux) = 0
 
-            //Construction of (r_value * q_aux) + r_aux operation
-            let product_plus_r = AExpr::add(&b_product_q, &r_aux, field);
 
-            //Construction of l_value - ((r_value * q_aux) + r_aux) constraint
-            let expr_new_constraint = AExpr::sub(l_value, &product_plus_r, field);
+            //q_aux declaration
+            let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
+            runtime.new_added_vars+=1;
+            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
+            new_vars_name.push(q_aux_name);
 
-            //COnstruction of l_value - ((r_value * q_aux) + r_aux) = 0 expresion
-            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transofmración a constraint falló.");
+            
+            // We need a signal because the product of two variables can be quadratic or higher. 
+            // Therefore, we need intermediate signals for ensure its reliability and prevent there variables from taking on all possible values
+            let b_product_q_name = format!("b_product_q{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let bq_aux = AExpr::Signal { symbol: b_product_q_name.clone() }; 
+            new_vars_name.push(b_product_q_name);
+
+
+            // Product of r_value and q -> b * q == r_value * q_aux
+            let res_mul = AExpr::mul(r_value, &q_aux, field);
+            let product_equal_signal = AExpr::sub(&res_mul, &bq_aux, field);
+
+            let product_equal_signal_constraint = AExpr::transform_expression_to_constraint_form(product_equal_signal.clone(), field).expect("El forzado del producto r*q a expr_signal falló");
+            constraints.push(product_equal_signal_constraint);
+
+            //Construction of b*q + r
+            let bq_plus_r = AExpr::add(&bq_aux, &r_aux, field);
+
+            // (b*q + r) - l_value = 0
+            let final_sub = AExpr::sub(&bq_plus_r, l_value, field);
+
+            let new_constraint = AExpr::transform_expression_to_constraint_form(final_sub, field).expect("La transofmración a constraint falló.");
+            constraints.push(new_constraint);
 
             Ok((
                 q_aux, //Se pone solo q_aux porque es la expresion principal
-                vec![new_constraint],
-                vec![q_aux_name,r_aux_name]
+                constraints,
+                new_vars_name
             ))
         
         }
