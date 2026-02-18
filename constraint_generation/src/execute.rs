@@ -4138,29 +4138,48 @@ fn execute_infix_op_autocomplete(
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
 
-            // CONSTRAINT 1: r_value != 0
+            // Signals
             let r_inv_name = format!("rinv_{}", runtime.new_added_vars);
             runtime.new_added_vars += 1;
             let r_inv = AExpr::Signal { symbol: r_inv_name.clone() };
-            new_vars_name.push(r_inv_name);
+            new_vars_name.push(r_inv_name.clone());
 
-            // Constraint: r_value * r_inv = 1 
-            // If r_value was 0, there would be no r_inv that satisfy 0 * r_inv = 1 -> 0 * r_inv != 1 
-            let mul_r_inv = AExpr::mul(r_value, &r_inv, field);
-            let not_zero_expr = AExpr::sub(&mul_r_inv, &AExpr::Number { value: BigInt::from(1) }, field);
-            let not_zero_constraint = AExpr::transform_expression_to_constraint_form(not_zero_expr, field).expect("Falló la creación de la restricción r_value != 0");
-            constraints.push(not_zero_constraint);
-
-            // CONSTRAINT 2: r_value > r_aux
-
-            //r_aux declaration
+             //r_aux declaration == r
             let r_aux_name = format!("raux_{}", runtime.new_added_vars);
             runtime.new_added_vars+=1;
             let r_aux = AExpr::Signal{symbol: r_aux_name.clone()};
             new_vars_name.push(r_aux_name);
 
-           // Constraint 1.1: q < b -> r_value - r_aux > 0
+            //q_aux declaration
+            let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
+            runtime.new_added_vars+=1;
+            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
+            new_vars_name.push(q_aux_name);
 
+            // We need a signal because the product of two variables can be quadratic or higher. 
+            // Therefore, we need intermediate signals for ensure its reliability and prevent there variables from taking on all possible values
+            let b_product_q_name = format!("b_product_q{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let bq_aux = AExpr::Signal { symbol: b_product_q_name.clone() }; 
+            new_vars_name.push(b_product_q_name);
+
+            // CONSTRAINT 1: r_value != 0
+            // New signal for multiplication result 
+            let check_zero_name = format!("check_zero_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let check_zero_sig = AExpr::Signal { symbol: check_zero_name.clone() };
+            new_vars_name.push(check_zero_name);
+
+            // (r_value * r_inv) - check_zero_sig = 0
+            let mul_r_inv_expr = AExpr::sub(&AExpr::mul(r_value, &r_inv, field), &check_zero_sig, field);
+            constraints.push(AExpr::transform_expression_to_constraint_form(mul_r_inv_expr, field).unwrap());
+
+            // check_zero_sig - 1 = 0
+            let is_one_expr = AExpr::sub(&check_zero_sig, &AExpr::Number { value: BigInt::from(1) }, field);
+            constraints.push(AExpr::transform_expression_to_constraint_form(is_one_expr, field).unwrap());
+
+
+            // CONSTRAINT 2: r_value > r_aux
             let (output_aux_b_minor_zero, constraints_lesserEq) = match secure_less_than_eq(n, &r_value, &r_aux, runtime, &mut new_vars_name) {
                 Ok(v) => v,
                 Err(_) => return Err(()), 
@@ -4173,22 +4192,6 @@ fn execute_infix_op_autocomplete(
 
 
             // CONSTRAINT 3:(r_value * q_aux) = l_value - r_aux === l_value - ((r_value * q_aux) + r_aux) = 0
-
-
-            //q_aux declaration
-            let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
-            runtime.new_added_vars+=1;
-            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
-            new_vars_name.push(q_aux_name);
-
-            
-            // We need a signal because the product of two variables can be quadratic or higher. 
-            // Therefore, we need intermediate signals for ensure its reliability and prevent there variables from taking on all possible values
-            let b_product_q_name = format!("b_product_q{}", runtime.new_added_vars);
-            runtime.new_added_vars += 1;
-            let bq_aux = AExpr::Signal { symbol: b_product_q_name.clone() }; 
-            new_vars_name.push(b_product_q_name);
-
 
             // Product of r_value and q -> b * q == r_value * q_aux
             let res_mul = AExpr::mul(r_value, &q_aux, field);
