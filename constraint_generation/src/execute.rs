@@ -3783,7 +3783,7 @@ fn decimal_to_bits(
 
     // Creating b signals (b0,b1,b2, ..., b_{N-1})
     for _ in 0..N {
-        let b_aux_name  = format!("b_{}", runtime.new_added_vars);
+        let b_aux_name  = format!("signal_bits_transform_{}", runtime.new_added_vars);
         runtime.new_added_vars += 1;
         b_signals.push(AExpr::Signal { symbol: b_aux_name.clone() });
         new_vars_name.push(b_aux_name);
@@ -3881,6 +3881,43 @@ fn bin_sum( //LikeBinSum funciton from circomlib but in Rust
         constraints
     ))
 }
+
+// =============================== SECURE LTE FUNCTION WITHOUT ================================
+/*
+ - Description:
+   Basicamente lo que se hace es aplicar Complemento a 2, es decir, para conocer si un numero es mayor que otro, mira el bit más significativo,
+   pero con un par de cositas más.
+
+   EN complemento a 1 solo sumabamos dos numeros convertidos a binario, utilizando un array de tamañan N+1 (siendo N el tamaño de los dos numeros binarios) para asi
+   el bit que indicaba el overflow tuviera sitio. De esta forma si era 1 sabiamos que B-A A>B y si era 0 pues A<=B.
+   Pero hubo una cosa que no tuvimos en cuenta y era el caso de usar esta función para checkear 0<=r<b
+   Ya que para a = b = 1, tenemoa 1 = 1 * q + r. Entonces, si aplicabamos bien la restriccion, deberia darse que q = 1 y r = 0 porque 0 <= r < 1, r no puede ser 1.
+   Pero no checkeabamos precisamente bien este caso porque CIVER usaba el caso de b = r = 1, es decir, A==B.
+
+   Con complemente a 1, al no usar un tercer array para el carry, puede darse que acabamos cogiendo el bit de acarrero, no el MSB (porque además en el output no cogia el last(), sino
+   el de N+1), entonces además de poder coger un bit que no representaba. Entonces, lo que pasaba es que no cumpliamos que r < b, ya que r podía tomar el valor 1, debido a que no esabamos
+   checkeando bien el caso de A==B.
+
+   CONCLUSION: Que a veces en N+1 que es de donde cogia el bit antes, se leia el MSB o el bit de Acarreo, y por eso por ejemplo para r < b segurmanete cogia el de acarrero y e devolvia un 1
+   cuando no debería
+
+   Entonces la contraint que forzaba a que el resultado fuese 0 pues fallaba evidentemente.
+
+
+   PARA SOLUCIONARLO:
+   Utilizar un array extra que usa acarreo, es decir, se pasa de (NOT A) + B a (NOT A) + B + 1.
+   Así, podemos tratar de una forma mas segura el caso de  A==B para cuando pase esto.
+
+
+   // Otras cosas que fallaban de la division:
+   NO haciamos que b,r y q fuesen numeros pequeños, entonces civer le metia numeros y hacia que saliese de rango, por eso lo paso a bits
+   Tampoco se hacia lo de b!=0 y es una de las condiciones dek teorima de la división (o eso he estado mirando para asegurarme)
+
+   Además de no usar la señal intermedia en b*q
+
+
+*/
+
 fn secure_less_than_eq(
     N: usize,
     l_value: &AExpr,
@@ -3900,12 +3937,12 @@ fn secure_less_than_eq(
     constraints.extend(constraints_bit_b);
 
     // ================================= Prepare input signals for bin_sum =================================
-    let mut input_signals: Vec<Vec<AExpr>> = Vec::with_capacity(2);
+    let mut input_signals: Vec<Vec<AExpr>> = Vec::with_capacity(3); // For A, B and third for CARRY
 
     for _ in 0..2 {
         let mut number_signals: Vec<AExpr> = Vec::with_capacity(N+1);
         for _ in 0..N+1 {
-            let signal_name = format!("signal_{}", runtime.new_added_vars);
+            let signal_name = format!("less_than_signal_{}", runtime.new_added_vars);
             runtime.new_added_vars += 1;
 
             let signal = AExpr::Signal { symbol: signal_name.clone() };
@@ -3916,6 +3953,14 @@ fn secure_less_than_eq(
         
         input_signals.push(number_signals);
     }
+
+    let mut plus_one_vector: Vec<AExpr> = Vec::with_capacity(N + 1);
+    plus_one_vector.push(AExpr::Number { value: BigInt::from(1) }); // LSB == 1
+
+    for _ in 1..N + 1 {
+        plus_one_vector.push(AExpr::Number { value: BigInt::from(0) }); 
+    }
+    input_signals.push(plus_one_vector);
 
     // We force input_signals to have the inverted binary value of vector A (Not A) and vector B
     for i in 0..N {
@@ -3937,7 +3982,7 @@ fn secure_less_than_eq(
     }
 
     // ================================= Sum the inputs with bin_sum =================================
-    let number = AExpr::Number { value: BigInt::from(2) };
+    let number = AExpr::Number { value: BigInt::from(3) };
     let ops = get_constant_usize(&number).expect("Shift amount must be a constant usize");
 
     let (add_constraints, constraints_add) = bin_sum(&input_signals, N+1, ops, &field_copy, runtime, new_vars_name).map_err(|_| ())?;
@@ -3958,125 +4003,245 @@ fn secure_less_than_eq(
     Ok((output, constraints))
 }
 
-/* fn secure_less_than_eq_offset(    
-//     N: usize,
-//     l_value: &AExpr,
-//     r_value: &AExpr,
-//     runtime: &mut RuntimeInformation,
-//     new_vars_name: &mut Vec<String>,
-// ) -> Result<(AExpr, Vec<Constraint>), ()> {
-//     let mut constraints = vec![];
-//     let field_copy = runtime.constants.get_p().clone();
+// =============================== SECURE LTE FUNCTION WITHOUT BINARY TRANSFORMATION ================================
 
-//     // Calculate value of 2 (offset)
-//     let mut offset = BigInt::from(1);
-//     offset<<= N; //Shift left 
-//     let offset_expr = AExpr::Number{value:offset};
+fn secure_less_than_eq_without_binary_transformation(
+    N: usize,
+    a_signals: &Vec<AExpr>,
+    b_signals: &Vec<AExpr>,
+    runtime: &mut RuntimeInformation,
+    new_vars_name: &mut Vec<String>,
+) -> Result<(AExpr, Vec<Constraint>), ()> {
+    let mut constraints: Vec<Constraint> = vec![];
+
+    let field_copy = runtime.constants.get_p().clone();
+
+    // ================================= Prepare input signals for bin_sum =================================
+    let mut input_signals: Vec<Vec<AExpr>> = Vec::with_capacity(3);
+
+    for _ in 0..2 {
+        let mut number_signals: Vec<AExpr> = Vec::with_capacity(N+1);
+        for _ in 0..N+1 {
+            let signal_name = format!("less_than_signal_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+
+            let signal = AExpr::Signal { symbol: signal_name.clone() };
+            new_vars_name.push(signal_name);
+
+            number_signals.push(signal);
+        }
+        
+        input_signals.push(number_signals);
+    }
+
+    let mut plus_one_vector: Vec<AExpr> = Vec::with_capacity(N + 1);
+    plus_one_vector.push(AExpr::Number { value: BigInt::from(1) }); // LSB == 1
+
+    for _ in 1..N + 1 {
+        plus_one_vector.push(AExpr::Number { value: BigInt::from(0) }); 
+    }
+    input_signals.push(plus_one_vector);
+
+    // We force input_signals to have the inverted binary value of vector A (Not A) and vector B
+    for i in 0..N{
+
+        // Apply NOT A
+        let eq_a = AExpr::sub(
+            &input_signals[0][i], 
+            &AExpr::sub(&AExpr::Number{value:BigInt::from(1)}, &a_signals[i], &field_copy), 
+            &field_copy);
 
 
-//     // Calculate N^2 + B - A
-//     let n_sum_b = AExpr::add(&offset_expr, &r_value, &field_copy);
-//     let result = AExpr::sub(&n_sum_b, &l_value, &field_copy);
+        let eq_b = AExpr::sub(&input_signals[1][i], &b_signals[i], &field_copy);
 
-//     // Convert result to bits
-//     let(result_bits, result_contraints) = decimal_to_bits(&result, N+1, &field_copy, runtime, new_vars_name);
-//     constraints.extend(result_contraints);
+        let c_a = AExpr::transform_expression_to_constraint_form(eq_a, &field_copy).unwrap();
+        let c_b = AExpr::transform_expression_to_constraint_form(eq_b, &field_copy).unwrap();
+
+        constraints.push(c_a);
+        constraints.push(c_b);
+    }
+
+    // For safety, force MSB of both numbers (a and b) to be 0
+    let zero = AExpr::Number { value: BigInt::from(0) };
+    let eq_zero_a = AExpr::sub(&input_signals[0][N], &zero, &field_copy);
+    let eq_zero_b = AExpr::sub(&input_signals[1][N], &zero, &field_copy);
     
-//     /* ==================== Explanation of the verification ====================
-//         Result = 2^n + B - A 
-//         If B >= A, then Result >= 2^n --> output = 1
-//         If B < A , then Result < 2^n  --> output = 0
+    constraints.push(AExpr::transform_expression_to_constraint_form(eq_zero_a, &field_copy).unwrap());
+    constraints.push(AExpr::transform_expression_to_constraint_form(eq_zero_b, &field_copy).unwrap());
 
-//     */
+    // ================================= Sum the inputs with bin_sum =================================
+    let number = AExpr::Number { value: BigInt::from(3) };
+    let ops = get_constant_usize(&number).expect("Shift amount must be a constant usize");
 
-//     let output = result_bits[N].clone();
+    let (add_constraints, constraints_add) = bin_sum(&input_signals, N+1, ops, &field_copy, runtime, new_vars_name).map_err(|_| ())?;
+    constraints.extend(constraints_add);
 
-//     Ok((
-//         output,
-//         constraints
-//     ))
 
-// } */
-// REALMENTE NO ES NECESARIA, podemos usar secure_less_than y aplicarla simétricamente invirtiendo los argumentos.
-// Es decir, para a < b, secure_less_then_eq(r_value, l_value), en lugar de llamarla con l_alue, r_value
-/* fn secure_less_than(
-//     N: usize,
-//     l_value: &AExpr,
-//     r_value: &AExpr,
-//     runtime: &mut RuntimeInformation,
-//     new_vars_name: &mut Vec<String>,
-// ) -> Result<(AExpr, Vec<Constraint>), ()> {
-//     let mut constraints: Vec<Constraint> = vec![];
-
-//     // ================================= Convert numbers to bits =================================
-//     let field_copy = runtime.constants.get_p().clone();
-
-//     let (a_signals, constraints_bit_a) = decimal_to_bits(l_value, N, &field_copy, runtime, new_vars_name);
-//     constraints.extend(constraints_bit_a);
-
-//     let (b_signals, constraints_bit_b) = decimal_to_bits(r_value, N, &field_copy, runtime, new_vars_name);
-//     constraints.extend(constraints_bit_b);
-
-//     // ================================= Prepare input signals for bin_sum =================================
-//     let mut input_signals: Vec<Vec<AExpr>> = Vec::with_capacity(2);
-
-//     for _ in 0..2 {
-//         let mut number_signals: Vec<AExpr> = Vec::with_capacity(N);
-//         for _ in 0..N {
-//             let signal_name = format!("signal_{}", runtime.new_added_vars);
-//             runtime.new_added_vars += 1;
-
-//             let signal = AExpr::Signal { symbol: signal_name.clone() };
-//             new_vars_name.push(signal_name);
-
-//             number_signals.push(signal);
-//         }
-//         input_signals.push(number_signals);
-//     }
-
-//     for i in 0..N {
-//         let eq_a = AExpr::sub(&input_signals[0][i], &a_signals[i], &field_copy);
-//         let eq_b = AExpr::sub(&input_signals[1][i], &b_signals[i], &field_copy);
-
-//         let c_a = AExpr::transform_expression_to_constraint_form(eq_a, &field_copy).unwrap();
-//         let c_b = AExpr::transform_expression_to_constraint_form(eq_b, &field_copy).unwrap();
-
-//         constraints.push(c_a);
-//         constraints.push(c_b);
-//     }
-
-//     // ================================= Sum the inputs with bin_sum =================================
-//     let number = AExpr::Number { value: BigInt::from(2) };
-//     let ops = get_constant_usize(&number).expect("Shift amount must be a constant usize");
-
-//     let (add_constraints, constraints_add) = bin_sum(&input_signals, N, ops, &field_copy, runtime, new_vars_name).map_err(|_| ())?;
-//     constraints.extend(constraints_add);
+    /* ==================== Explanation of the verification ====================
+        1) We have to know that de MSB (most significant bit) indicates the sign of a binary number
+        2) To determine if A <= B, we compute the “difference” B + (NOT A):
+            2.1) If the MSB of B + (NOT A) is 0, the difference is non-negative -> A > B
+            2.2) If the MSB is 1, the difference is negative -> A <= B y A==B
     
-//     let output = AExpr::sub(&l_value, &add_constraints[N - 1], &field_copy);
-//     let c_out = AExpr::transform_expression_to_constraint_form(output.clone(),&field_copy).unwrap();
-//     constraints.push(c_out);
+        The following expressions combine the above:
+    */
 
-//     Ok((
-//         output, 
-//         constraints
-//     ))
-// }
+
+    // ENsure we use de MSB
+    let output = add_constraints.last().unwrap().clone();
+
+    Ok((output, constraints))
+}
+
+// =============================== XOR FUNCTION ================================
 /*
-    We have to difference between the sub its 0 or its distinct to 0.
-    This is because, if sub != 0, that mean sub = 2 - 0 = 2
-    Then sub *out = 0 -> 2 * out = 0 -> out = 0 -> Indicate that 2 and 0 aren't equals
+ Description:
+  - This function is used to compare two numbers and know is them are equal.
 
-    On the other hand, if sub = 2 - 2 = 0 -> 0 * out = 0 
-    out could be any number
+ Functioning:
+  - This function is inspired in the logic gate XOR. Basically, in natural language, tha XOR output return 0 when two inputs are equal (or return 1 when they no).
+    We know tha true table of XOR is:
+          a     b      XOR Result
+          0     0          0
+          0     1          1
+          1     0          1
+          1     1          0
 
-    For that, we have to know if sub its 0 or not,
-    if sub = 0 (In other words, they are equal):
-        out = 1
-    else 
-        sub * out = 0
+    We can appreciate that this true table follows the expression XOR Result = (NOT A)*B - A*(NOT B).
+    
+    This way, we can implement a function that simulate this performance following de previos expression.
+    It is importante ensure that we are using binary values because A (XOR Operation) B does not exist.
+    Furthermore, althought we know we are working with binary values and it is imposible get a expresion higher than quadratic,
+    it is mandatory use intermediate signals even so.
+
+ Returned value:
+  - We return a variable called carry_output. This var is calculated using the OR expresion: a+b - a*b
+    We know tha true table of OR is:
+        a     b      XOR Result
+        0     0          0
+        0     1          1
+        1     0          1
+        1     1          1
+
+    And following the base case of induction (applying the expression to each bit), it is applied to the remaining bits. 
+    In this way, we can check if A = B and if each comparison resulted in 0.
+    To obtain a single value representing whether A = B, we use carry_output = carry_output + bit_xor - (carry_output * bit_xor).
+    Where bit_xor = (NOT A)*B - A*(NOT B) but for a bit pair
+
+    In this way we can keep the carry_output at 0 as long as for each pair of bits it is 0. (Check OR table).
 
 */
-    */ 
+fn xor_function(
+    N: usize,
+    a_signals: &Vec<AExpr>,
+    b_signals: &Vec<AExpr>,
+    runtime: &mut RuntimeInformation,
+    new_vars_name: &mut Vec<String>,
+) -> Result<(AExpr, Vec<Constraint>), ()> {
+     let mut constraints: Vec<Constraint> = vec![];
+    let field_copy = runtime.constants.get_p().clone();
+
+    //TO NOT A & NOT B
+    let mut input_signals: Vec<Vec<AExpr>> = Vec::with_capacity(2);
+
+    for i in 0..2 {
+        let mut number_signals: Vec<AExpr> = Vec::with_capacity(N);
+
+        for _ in 0..N{
+            let prefix = match i {
+                0 => "xor_not_a_signal",
+                1 => "xor_not_b_signal",
+                _ => "signal",
+            };
+
+            let signal_name = format!("{}_{}", prefix, runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            
+            let signal = AExpr::Signal { symbol: signal_name.clone() };
+            new_vars_name.push(signal_name);
+            number_signals.push(signal);
+        }
+        
+        input_signals.push(number_signals);
+    }
+    
+    // 2. NOT A & NOT B 
+    for i in 0..N{
+        let eq_a = AExpr::sub(
+            &input_signals[0][i], 
+            &AExpr::sub(&AExpr::Number{value:BigInt::from(1)}, &a_signals[i], &field_copy), 
+            &field_copy);
+
+        let force_eqa_to_zero= AExpr::transform_expression_to_constraint_form(eq_a, &field_copy).unwrap();
+        constraints.push(force_eqa_to_zero);
+
+        let eq_b = AExpr::sub(
+            &input_signals[1][i], 
+            &AExpr::sub(&AExpr::Number{value:BigInt::from(1)}, &b_signals[i], &field_copy),
+             &field_copy);
+
+        let force_eqb_to_zero= AExpr::transform_expression_to_constraint_form(eq_b, &field_copy).unwrap();
+        constraints.push(force_eqb_to_zero);
+    }
+
+    // 3. XOR = (A * NOT B) + (NOT A * B)
+    let mut carry_output = AExpr::Number { value: BigInt::from(0) };
+
+    for i in 0..N {
+        // 1. Creamos señales intermedias para los productos
+        let name_p1 = format!("prod1_{}_{}", i, runtime.new_added_vars);
+        let name_p2 = format!("prod2_{}_{}", i, runtime.new_added_vars);
+        runtime.new_added_vars += 1;
+        
+        let sig_p1 = AExpr::Signal { symbol: name_p1.clone() };
+        let sig_p2 = AExpr::Signal { symbol: name_p2.clone() };
+        new_vars_name.push(name_p1);
+        new_vars_name.push(name_p2);
+
+        // 2. sig_p1 = a * not_b
+        let eq_p1 = AExpr::sub(&sig_p1, &AExpr::mul(&a_signals[i], &input_signals[1][i], &field_copy), &field_copy);
+        constraints.push(AExpr::transform_expression_to_constraint_form(eq_p1, &field_copy).unwrap());
+
+        // 3.  sig_p2 = not_a * b
+        let eq_p2 = AExpr::sub(&sig_p2, &AExpr::mul(&input_signals[0][i], &b_signals[i], &field_copy), &field_copy);
+        constraints.push(AExpr::transform_expression_to_constraint_form(eq_p2, &field_copy).unwrap());
+
+        // 4 sig_p1 + sig_p2 == a*not_b + not_a*b
+        let bit_xor = AExpr::add(&sig_p1, &sig_p2, &field_copy);
+
+        if i == 0 {
+            carry_output = bit_xor;
+        } else {
+            // carry_output + bit_xor - (carry_output * bit_xor) -> carry the result of each operation to test that a==b if carry_output = 0 when the for loop ends
+
+            // Althought we know this variables are binary, we must still use intermediate signals to "separete" trades that have risk of being quadratic
+            let name_carry = format!("carry_tmp_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let sig_carry_prod = AExpr::Signal { symbol: name_carry.clone() };
+            new_vars_name.push(name_carry);
+
+            // sig_carry_prod = carry_output * bit_xor
+            let eq_c = AExpr::sub(&sig_carry_prod, &AExpr::mul(&carry_output, &bit_xor, &field_copy), &field_copy);
+            constraints.push(AExpr::transform_expression_to_constraint_form(eq_c, &field_copy).unwrap());
+
+            // sum_vals = carry_output + bit_xor
+            let sum_vals = AExpr::add(&carry_output, &bit_xor, &field_copy);
+
+            // carry_output = carry_output + bit_xor - (carry_output * bit_xor)
+            carry_output = AExpr::sub(&sum_vals, &sig_carry_prod, &field_copy);
+        }
+    }
+   
+
+    Ok((carry_output, constraints))
+
+}
+
+// =============================== RECONSTRUCT BINARY NUMBER FUNCTION ================================
+/*
+ Description:
+  - Convert a binary number (represented as a zero and one array) in decimal numve
+*/
 fn reconstruct_binary_number(
     binary: &Vec<AExpr>,
     N: usize,
@@ -4095,6 +4260,8 @@ fn reconstruct_binary_number(
 // ----------------------------
 // operator for autocompelte function
 // ----------------------------
+
+
 const MAX_BITS: usize = 253;
 fn execute_infix_op_autocomplete(
     meta: &Meta,
@@ -4139,12 +4306,8 @@ fn execute_infix_op_autocomplete(
             let mut new_vars_name = vec![];
 
             // Signals
-            let r_inv_name = format!("rinv_{}", runtime.new_added_vars);
-            runtime.new_added_vars += 1;
-            let r_inv = AExpr::Signal { symbol: r_inv_name.clone() };
-            new_vars_name.push(r_inv_name.clone());
 
-             //r_aux declaration == r
+             //r_aux declaration 
             let r_aux_name = format!("raux_{}", runtime.new_added_vars);
             runtime.new_added_vars+=1;
             let r_aux = AExpr::Signal{symbol: r_aux_name.clone()};
@@ -4163,48 +4326,82 @@ fn execute_infix_op_autocomplete(
             let bq_aux = AExpr::Signal { symbol: b_product_q_name.clone() }; 
             new_vars_name.push(b_product_q_name);
 
-            // CONSTRAINT 1: r_value != 0
-            // New signal for multiplication result 
-            let check_zero_name = format!("check_zero_{}", runtime.new_added_vars);
-            runtime.new_added_vars += 1;
-            let check_zero_sig = AExpr::Signal { symbol: check_zero_name.clone() };
-            new_vars_name.push(check_zero_name);
+            //===================================================== FORCED q_aux TO BE BINARY ======================================================================
+            // This way, we ensure that q is a positive number and then, is not higher than 2^n-1 limit of the prime field
+            // r is not necessary because when we check 0 <= r < b, less_than_than_eq is called and inside it decimal_to_bits() function are called
 
-            // (r_value * r_inv) - check_zero_sig = 0
-            let mul_r_inv_expr = AExpr::sub(&AExpr::mul(r_value, &r_inv, field), &check_zero_sig, field);
-            constraints.push(AExpr::transform_expression_to_constraint_form(mul_r_inv_expr, field).unwrap());
+            let (_, constraints_bit_q) = decimal_to_bits(&q_aux, n, field, runtime, &mut new_vars_name);
+            constraints.extend(constraints_bit_q);
 
-            // check_zero_sig - 1 = 0
-            let is_one_expr = AExpr::sub(&check_zero_sig, &AExpr::Number { value: BigInt::from(1) }, field);
-            constraints.push(AExpr::transform_expression_to_constraint_form(is_one_expr, field).unwrap());
+            let (r_signals, constraints_bit_r) = decimal_to_bits(&r_aux, n, field, runtime, &mut new_vars_name);
+            constraints.extend(constraints_bit_r);
 
 
-            // CONSTRAINT 2: r_value > r_aux
-            let (output_aux_b_minor_zero, constraints_lesserEq) = match secure_less_than_eq(n, &r_value, &r_aux, runtime, &mut new_vars_name) {
+
+
+            //======================================================= TEST THAT b != 0 IS TRUE =============================================================================
+            let (b_signals, constraints_bit_b) = decimal_to_bits(r_value, n, &field, runtime, &mut  new_vars_name);
+            constraints.extend(constraints_bit_b);
+
+            let (zero_signals, constraints_bit_0) = decimal_to_bits(&AExpr::Number { value:BigInt::from(0) }, n, &field, runtime, &mut  new_vars_name);
+            constraints.extend(constraints_bit_0);
+
+            // return 1 if b!=0
+            let (equal, xor_constraints) = match xor_function(n,&b_signals, &zero_signals,runtime, &mut new_vars_name){
                 Ok(v) => v,
                 Err(_) => return Err(()), 
             };
-            constraints.extend(constraints_lesserEq);
+            constraints.extend(xor_constraints);
 
-            // secure_less_than_eq returns 0 when l_value < r_value. Then if output_aux is 0 is fulfilled
+
+            // 1 - equal = 0; if equal = 1, then 1-1=0 -> GOOD; if equal = 0 (i mean, a == b), then 1 -0 = 1 != 0 -> BAD
+            let force_equal_one = AExpr::sub(&AExpr::Number { value: BigInt::from(1)}, &equal, field);
+            let not_equal = AExpr::transform_expression_to_constraint_form(force_equal_one, field).unwrap();
+            constraints.push(not_equal);
+
+            
+
+            //======================================================= TEST THAT 0<=r < b IS TRUE =============================================================================
+
+            // CONSTRAINT 2: r_value > r_aux
+            let (output_aux_b_minor_zero, constraints_lesser_eq_first) = match secure_less_than_eq_without_binary_transformation(n, &b_signals, &r_signals, runtime, &mut new_vars_name) {
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints.extend(constraints_lesser_eq_first);
+
+            // secure_less_than_eq returns 0 when qaux < r_value. Then if output_aux is 0 is fulfilled
             let c_out_constraint_one = AExpr::transform_expression_to_constraint_form(output_aux_b_minor_zero.clone(),field).unwrap();
             constraints.push(c_out_constraint_one);
 
+            // CONSTRAINT 3: 0 <= r_aux
+            let (output_raux_greater_eq_zero, constraints_lesser_eq_second) = match secure_less_than_eq_without_binary_transformation(n, &zero_signals, &r_signals, runtime, &mut new_vars_name) {
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints.extend(constraints_lesser_eq_second);
 
-            // CONSTRAINT 3:(r_value * q_aux) = l_value - r_aux === l_value - ((r_value * q_aux) + r_aux) = 0
+            // secure_less_than_eq returns 1 when 0 <= r_aux. Then if output_aux is 1 is fulfilled
+
+            let output_is_one = AExpr::sub(&output_raux_greater_eq_zero, &AExpr::Number { value: BigInt::from(1)},field);
+            let c_out_constraint_one = AExpr::transform_expression_to_constraint_form(output_is_one,field).unwrap();
+            constraints.push(c_out_constraint_one);
+
+
+            //======================================================= TEST THAT a = b*q + r IS TRUE =============================================================================
+            // CONSTRAINT 4:(r_value * q_aux) = l_value - r_aux === l_value - ((r_value * q_aux) + r_aux) = 0
 
             // Product of r_value and q -> b * q == r_value * q_aux
             let res_mul = AExpr::mul(r_value, &q_aux, field);
             let product_equal_signal = AExpr::sub(&res_mul, &bq_aux, field);
-
             let product_equal_signal_constraint = AExpr::transform_expression_to_constraint_form(product_equal_signal.clone(), field).expect("El forzado del producto r*q a expr_signal falló");
             constraints.push(product_equal_signal_constraint);
 
             //Construction of b*q + r
             let bq_plus_r = AExpr::add(&bq_aux, &r_aux, field);
 
-            // (b*q + r) - l_value = 0
-            let final_sub = AExpr::sub(&bq_plus_r, l_value, field);
+            // l_value - (b*q + r)  = 0
+            let final_sub = AExpr::sub(l_value, &bq_plus_r, field);
 
             let new_constraint = AExpr::transform_expression_to_constraint_form(final_sub, field).expect("La transofmración a constraint falló.");
             constraints.push(new_constraint);
@@ -4260,54 +4457,226 @@ fn execute_infix_op_autocomplete(
         }
         IntDiv =>{
             // Operation => q_aux = l_value / r_value | New COnstraint => l_value - (r_value * q_aux) = 0
-           
-            // q_aux declaration
+
+            let mut constraints = vec![];
+            let mut new_vars_name = vec![];
+
+            // Signals
+
+             //r_aux declaration 
+            let r_aux_name = format!("raux_{}", runtime.new_added_vars);
+            runtime.new_added_vars+=1;
+            let r_aux = AExpr::Signal{symbol: r_aux_name.clone()};
+            new_vars_name.push(r_aux_name);
+
+            //q_aux declaration
             let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
+            runtime.new_added_vars+=1;
+            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
+            new_vars_name.push(q_aux_name);
+
+            // We need a signal because the product of two variables can be quadratic or higher. 
+            // Therefore, we need intermediate signals for ensure its reliability and prevent there variables from taking on all possible values
+            let b_product_q_name = format!("b_product_q{}", runtime.new_added_vars);
             runtime.new_added_vars += 1;
-            let q_aux = AExpr::Signal { symbol: q_aux_name.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
+            let bq_aux = AExpr::Signal { symbol: b_product_q_name.clone() }; 
+            new_vars_name.push(b_product_q_name);
+
+            //===================================================== FORCED q_aux TO BE BINARY ======================================================================
+            // This way, we ensure that q is a positive number and then, is not higher than 2^n-1 limit of the prime field
+            // r is not necessary because when we check 0 <= r < b, less_than_than_eq is called and inside it decimal_to_bits() function are called
+
+            let (_, constraints_bit_q) = decimal_to_bits(&q_aux, n, field, runtime, &mut new_vars_name);
+            constraints.extend(constraints_bit_q);
+
+            let (r_signals, constraints_bit_r) = decimal_to_bits(&r_aux, n, field, runtime, &mut new_vars_name);
+            constraints.extend(constraints_bit_r);
+
+
+
+
+            //======================================================= TEST THAT b != 0 IS TRUE =============================================================================
+            let (b_signals, constraints_bit_b) = decimal_to_bits(r_value, n, &field, runtime, &mut  new_vars_name);
+            constraints.extend(constraints_bit_b);
+
+            let (zero_signals, constraints_bit_0) = decimal_to_bits(&AExpr::Number { value:BigInt::from(0) }, n, &field, runtime, &mut  new_vars_name);
+            constraints.extend(constraints_bit_0);
+
+            // return 1 if b!=0
+            let (equal, xor_constraints) = match xor_function(n,&b_signals, &zero_signals,runtime, &mut new_vars_name){
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints.extend(xor_constraints);
+
+
+            // 1 - equal = 0; if equal = 1, then 1-1=0 -> GOOD; if equal = 0 (i mean, a == b), then 1 -0 = 1 != 0 -> BAD
+            let force_equal_one = AExpr::sub(&AExpr::Number { value: BigInt::from(1)}, &equal, field);
+            let not_equal = AExpr::transform_expression_to_constraint_form(force_equal_one, field).unwrap();
+            constraints.push(not_equal);
+
             
-            // Construction of _value * q_aux operation
-            let a = AExpr::mul(r_value, &q_aux, field); // a' = b' * q'
 
-            // Construction of new constraint: l_value - (a); a = r_value * q_aux
-            let expr_new_constraint = AExpr::sub(l_value, &a, field);
+            //======================================================= TEST THAT 0<=r < b IS TRUE =============================================================================
 
-            // El transform lo que hace es igualar la expresion a 0
-            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
+            // CONSTRAINT 2: r_value > r_aux
+            let (output_aux_b_minor_zero, constraints_lesser_eq_first) = match secure_less_than_eq_without_binary_transformation(n, &b_signals, &r_signals, runtime, &mut new_vars_name) {
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints.extend(constraints_lesser_eq_first);
+
+            // secure_less_than_eq returns 0 when qaux < r_value. Then if output_aux is 0 is fulfilled
+            let c_out_constraint_one = AExpr::transform_expression_to_constraint_form(output_aux_b_minor_zero.clone(),field).unwrap();
+            constraints.push(c_out_constraint_one);
+
+            // CONSTRAINT 3: 0 <= r_aux
+            let (output_raux_greater_eq_zero, constraints_lesser_eq_second) = match secure_less_than_eq_without_binary_transformation(n, &zero_signals, &r_signals, runtime, &mut new_vars_name) {
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints.extend(constraints_lesser_eq_second);
+
+            // secure_less_than_eq returns 1 when 0 <= r_aux. Then if output_aux is 1 is fulfilled
+
+            let output_is_one = AExpr::sub(&output_raux_greater_eq_zero, &AExpr::Number { value: BigInt::from(1)},field);
+            let c_out_constraint_one = AExpr::transform_expression_to_constraint_form(output_is_one,field).unwrap();
+            constraints.push(c_out_constraint_one);
+
+
+            //======================================================= TEST THAT a = b*q + r IS TRUE =============================================================================
+            // CONSTRAINT 4:(r_value * q_aux) = l_value - r_aux === l_value - ((r_value * q_aux) + r_aux) = 0
+
+            // Product of r_value and q -> b * q == r_value * q_aux
+            let res_mul = AExpr::mul(r_value, &q_aux, field);
+            let product_equal_signal = AExpr::sub(&res_mul, &bq_aux, field);
+            let product_equal_signal_constraint = AExpr::transform_expression_to_constraint_form(product_equal_signal.clone(), field).expect("El forzado del producto r*q a expr_signal falló");
+            constraints.push(product_equal_signal_constraint);
+
+            // l_value - (b*q + r)  = 0
+            let final_sub = AExpr::sub(l_value, &product_equal_signal, field);
+
+            let new_constraint = AExpr::transform_expression_to_constraint_form(final_sub, field).expect("La transofmración a constraint falló.");
+            constraints.push(new_constraint);
 
             Ok((
-                q_aux,
-                vec![new_constraint],
-                vec![q_aux_name]
+                q_aux, //Se pone solo q_aux porque es la expresion principal
+                constraints,
+                new_vars_name
             ))
+        
         }
         Mod => {
             // Operation: r_aux = l_value - (r_value * q_aux) | New constraint: r_aux - (l_value - (r_value * q_aux) ) = 0
 
-            // q_aux declaration
-            let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
-            runtime.new_added_vars+=1;
-            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
-            //r_aux declaration
+                        let mut constraints = vec![];
+            let mut new_vars_name = vec![];
+
+            // Signals
+
+             //r_aux declaration 
             let r_aux_name = format!("raux_{}", runtime.new_added_vars);
             runtime.new_added_vars+=1;
             let r_aux = AExpr::Signal{symbol: r_aux_name.clone()};
+            new_vars_name.push(r_aux_name);
 
-            //Construction of r_value*q_aux operation
-            let b_product_q = AExpr::mul(r_value, &q_aux,field);
+            //q_aux declaration
+            let q_aux_name = format!("qaux_{}", runtime.new_added_vars);
+            runtime.new_added_vars+=1;
+            let q_aux = AExpr::Signal{symbol: q_aux_name.clone()};
+            new_vars_name.push(q_aux_name);
 
-            //Constructoin of l_value - (r_value * q_aux) operation
-            let a_sub_product = AExpr::sub(l_value, &b_product_q, field);
+            // We need a signal because the product of two variables can be quadratic or higher. 
+            // Therefore, we need intermediate signals for ensure its reliability and prevent there variables from taking on all possible values
+            let b_product_q_name = format!("b_product_q{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let bq_aux = AExpr::Signal { symbol: b_product_q_name.clone() }; 
+            new_vars_name.push(b_product_q_name);
 
-            // Construction of new constraint: r_aux - (l_value - (r_value * q_aux)) 
-            let expr_new_constraint = AExpr::sub(&r_aux, &a_sub_product, field);
-            // Construction of the equation for the new constraint
-            let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transofmración a constraint falló.");
+            //===================================================== FORCED q_aux TO BE BINARY ======================================================================
+            // This way, we ensure that q is a positive number and then, is not higher than 2^n-1 limit of the prime field
+            // r is not necessary because when we check 0 <= r < b, less_than_than_eq is called and inside it decimal_to_bits() function are called
+
+            let (_, constraints_bit_q) = decimal_to_bits(&q_aux, n, field, runtime, &mut new_vars_name);
+            constraints.extend(constraints_bit_q);
+
+            let (r_signals, constraints_bit_r) = decimal_to_bits(&r_aux, n, field, runtime, &mut new_vars_name);
+            constraints.extend(constraints_bit_r);
+
+
+
+
+            //======================================================= TEST THAT b != 0 IS TRUE =============================================================================
+            let (b_signals, constraints_bit_b) = decimal_to_bits(r_value, n, &field, runtime, &mut  new_vars_name);
+            constraints.extend(constraints_bit_b);
+
+            let (zero_signals, constraints_bit_0) = decimal_to_bits(&AExpr::Number { value:BigInt::from(0) }, n, &field, runtime, &mut  new_vars_name);
+            constraints.extend(constraints_bit_0);
+
+            // return 1 if b!=0
+            let (equal, xor_constraints) = match xor_function(n,&b_signals, &zero_signals,runtime, &mut new_vars_name){
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints.extend(xor_constraints);
+
+
+            // 1 - equal = 0; if equal = 1, then 1-1=0 -> GOOD; if equal = 0 (i mean, a == b), then 1 -0 = 1 != 0 -> BAD
+            let force_equal_one = AExpr::sub(&AExpr::Number { value: BigInt::from(1)}, &equal, field);
+            let not_equal = AExpr::transform_expression_to_constraint_form(force_equal_one, field).unwrap();
+            constraints.push(not_equal);
+
+            
+
+            //======================================================= TEST THAT 0<=r < b IS TRUE =============================================================================
+
+            // CONSTRAINT 2: r_value > r_aux
+            let (output_aux_b_minor_zero, constraints_lesser_eq_first) = match secure_less_than_eq_without_binary_transformation(n, &b_signals, &r_signals, runtime, &mut new_vars_name) {
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints.extend(constraints_lesser_eq_first);
+
+            // secure_less_than_eq returns 0 when qaux < r_value. Then if output_aux is 0 is fulfilled
+            let c_out_constraint_one = AExpr::transform_expression_to_constraint_form(output_aux_b_minor_zero.clone(),field).unwrap();
+            constraints.push(c_out_constraint_one);
+
+            // CONSTRAINT 3: 0 <= r_aux
+            let (output_raux_greater_eq_zero, constraints_lesser_eq_second) = match secure_less_than_eq_without_binary_transformation(n, &zero_signals, &r_signals, runtime, &mut new_vars_name) {
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints.extend(constraints_lesser_eq_second);
+
+            // secure_less_than_eq returns 1 when 0 <= r_aux. Then if output_aux is 1 is fulfilled
+
+            let output_is_one = AExpr::sub(&output_raux_greater_eq_zero, &AExpr::Number { value: BigInt::from(1)},field);
+            let c_out_constraint_one = AExpr::transform_expression_to_constraint_form(output_is_one,field).unwrap();
+            constraints.push(c_out_constraint_one);
+
+
+            //======================================================= TEST THAT a = b*q + r IS TRUE =============================================================================
+            // CONSTRAINT 4:(r_value * q_aux) = l_value - r_aux === l_value - ((r_value * q_aux) + r_aux) = 0
+
+            // Product of r_value and q -> b * q == r_value * q_aux
+            let res_mul = AExpr::mul(r_value, &q_aux, field);
+            let product_equal_signal = AExpr::sub(&res_mul, &bq_aux, field);
+            let product_equal_signal_constraint = AExpr::transform_expression_to_constraint_form(product_equal_signal.clone(), field).expect("El forzado del producto r*q a expr_signal falló");
+            constraints.push(product_equal_signal_constraint);
+
+            //Construction of b*q + r
+            let bq_plus_r = AExpr::add(&bq_aux, &r_aux, field);
+
+            // l_value - (b*q + r)  = 0
+            let final_sub = AExpr::sub(l_value, &bq_plus_r, field);
+
+            let new_constraint = AExpr::transform_expression_to_constraint_form(final_sub, field).expect("La transofmración a constraint falló.");
+            constraints.push(new_constraint);
 
             Ok((
-                r_aux,
-                vec![new_constraint],
-                vec![q_aux_name, r_aux_name]
+                r_aux, //Se pone solo q_aux porque es la expresion principal
+                constraints,
+                new_vars_name
             ))
         }
         ShiftL =>{
@@ -4467,11 +4836,11 @@ fn execute_infix_op_autocomplete(
             let field_copy = runtime.constants.get_p().clone();
 
             // returns 1 if r_value <= l_value --> v_value >= r_value
-            let (output_aux, constraints_lesserEq) = match secure_less_than_eq(n,r_value, l_value, runtime, &mut new_vars_name) {
+            let (output_aux, constraints_lesser_eq) = match secure_less_than_eq(n,r_value, l_value, runtime, &mut new_vars_name) {
                 Ok(v) => v,
                 Err(_) => return Err(()), 
             };
-           constraints.extend(constraints_lesserEq);
+           constraints.extend(constraints_lesser_eq);
 
             let eq = AExpr::sub(&output_aux,&AExpr::Number { value: BigInt::from(1) }, &field_copy);
             let c_out = AExpr::transform_expression_to_constraint_form(eq,&field_copy).unwrap();
@@ -4538,56 +4907,140 @@ fn execute_infix_op_autocomplete(
         Eq => {
             // Operator l_value == r_value | New Constraint: l_value - r_value = 0
             let mut constraints_eq = vec![];
+            let mut new_vars_name =vec![];
 
-            let sub = AExpr::sub(l_value,r_value,  &field);
-            let constraint = AExpr::transform_expression_to_constraint_form(sub.clone(),  &field).unwrap();
-            constraints_eq.push(constraint);
+            // number a transformed to bits
+            let (a_signals, constraints_bit_a) = decimal_to_bits(l_value, n, &field, runtime, &mut new_vars_name);
+            constraints_eq.extend(constraints_bit_a);
+
+            // number b transform to bits
+            let (b_signals, constraints_bit_b) = decimal_to_bits(r_value, n, &field, runtime, &mut  new_vars_name);
+            constraints_eq.extend(constraints_bit_b);
+
+            // When we have both numbers in binary system, we will check every bit pair are equal. 
+
+            // If equal = 0, ten a == b
+            let (equal, xor_constraints) = match xor_function(n,&a_signals, &b_signals,runtime, &mut new_vars_name){
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints_eq.extend(xor_constraints);
+
+
+            // 1 - equal = 0; if equal = 1, then 1=0 -> BAD; if equal = 0 (i mean, a == b), then 0 = 0 -> GOOD
+            let c_equal = AExpr::transform_expression_to_constraint_form(equal.clone(), field).unwrap();
+            constraints_eq.push(c_equal);
 
             Ok((
-                sub,
+                equal,
                 constraints_eq,
-                vec![]
+                new_vars_name
             ))
         }
         NotEq => {
             // Operator l_value != r_value | New Constraint: l_value - r_value > 0 -> Constraint --> MSB[l_value-r_value] = 0 
             let mut new_vars_name =vec![];
             let mut constraints_neq = vec![];
-            
-            let sub = AExpr::sub(l_value,r_value,  &field);
-            let (output_aux, constraints_greater) =  secure_less_than_eq(n, &sub,&AExpr::Number{value: BigInt::from(0)}, runtime, &mut new_vars_name).unwrap();
-            constraints_neq.extend(constraints_greater);
 
-            let constraint = AExpr::transform_expression_to_constraint_form(output_aux.clone(),  &field).unwrap();
-            constraints_neq.push(constraint);
+            // number a transformed to bits
+            let (a_signals, constraints_bit_a) = decimal_to_bits(l_value, n, &field, runtime, &mut new_vars_name);
+            constraints_neq.extend(constraints_bit_a);
+
+            // number b transform to bits
+            let (b_signals, constraints_bit_b) = decimal_to_bits(r_value, n, &field, runtime, &mut  new_vars_name);
+            constraints_neq.extend(constraints_bit_b);
+
+            // When we have both numbers in binary system, we will check every bit pair are equal. 
+
+            // If equal = 1, ten a != b
+            let (equal, xor_constraints) = match xor_function(n,&a_signals, &b_signals,runtime, &mut new_vars_name){
+                Ok(v) => v,
+                Err(_) => return Err(()), 
+            };
+            constraints_neq.extend(xor_constraints);
+
+
+            // 1 - equal = 0; if equal = 1, then 1-1=0 -> GOOD; if equal = 0 (i mean, a == b), then 1 -0 = 1 != 0 -> BAD
+            let force_equal_one = AExpr::sub(&AExpr::Number { value: BigInt::from(1)}, &equal, field);
+            let not_equal = AExpr::transform_expression_to_constraint_form(force_equal_one, field).unwrap();
+            constraints_neq.push(not_equal);
 
             Ok((
-                output_aux,
+                equal,
                 constraints_neq,
                 new_vars_name
             ))
         }
         BoolOr => {
             //Operator l_value or r_value | New Constraint: a + b - a * b 
-            let add_or = AExpr::add(l_value, r_value, field);
-            let mul_or = AExpr::mul(l_value, r_value, field);
+            let mut new_vars_name =vec![];
+            let mut constraints_or = vec![];
 
-            let result = AExpr::sub(&add_or, &mul_or, field);
+            //1. Check that a and b inputs are binary (0 or 1)
+            let one = AExpr::Number { value: BigInt::from(1) };
+            
+            // Check that A is a boolean value: l_value * (1 - l_value) = 0
+            let term_a = AExpr::mul(l_value, &AExpr::sub(&one, l_value, field), field);
+            let constraint_a = AExpr::transform_expression_to_constraint_form(term_a, field).expect("bit constraint failed");
+            constraints_or.push(constraint_a);
+
+            // Check that A is a boolean value: r_value * (1 - r_value) = 0
+            let term_b = AExpr::mul(r_value, &AExpr::sub(&one, r_value, field), field);
+            let constraint_b = AExpr::transform_expression_to_constraint_form(term_b, field).expect("bit constraint failed");
+            constraints_or.push(constraint_b);
+
+            //2. Once checked, apply the OR operation
+            let signal_name = format!("or_signal_mul_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let signal = AExpr::Signal { symbol: signal_name.clone() };
+            new_vars_name.push(signal_name);
+
+            let add_or = AExpr::add(l_value, r_value, field);
+
+            let mul_or = AExpr::mul(l_value, r_value, field);
+            let forced_signal_to_mul = AExpr::sub(&mul_or, &signal, field);
+            constraints_or.push(AExpr::transform_expression_to_constraint_form(forced_signal_to_mul, field).unwrap());
+
+            let result = AExpr::sub(&add_or, &signal, field);
       
              Ok((
                 result,
-                vec![],
-                vec![]
+                constraints_or,
+                new_vars_name
             ))
         }
         BoolAnd => {
             //Operator l_value or r_value | New Constraint: a * b 
-            let mul_and = AExpr::mul(l_value, r_value, field);
+            let mut new_vars_name =vec![];
+            let mut constraints_and = vec![];
+
+            //1. Check that a and b inputs are binary (0 or 1)
+            let one = AExpr::Number { value: BigInt::from(1) };
+            
+            // Check that A is a boolean value: l_value * (1 - l_value) = 0
+            let term_a = AExpr::mul(l_value, &AExpr::sub(&one, l_value, field), field);
+            let constraint_a = AExpr::transform_expression_to_constraint_form(term_a, field).expect("bit constraint failed");
+            constraints_and.push(constraint_a);
+
+            // Check that A is a boolean value: r_value * (1 - r_value) = 0
+            let term_b = AExpr::mul(r_value, &AExpr::sub(&one, r_value, field), field);
+            let constraint_b = AExpr::transform_expression_to_constraint_form(term_b, field).expect("bit constraint failed");
+            constraints_and.push(constraint_b);
+
+            //2. Once checked, apply the OR operation
+            let signal_name = format!("or_signal_mul_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let signal = AExpr::Signal { symbol: signal_name.clone() };
+            new_vars_name.push(signal_name);
+
+            let mul_or = AExpr::mul(l_value, r_value, field);
+            let forced_signal_to_mul = AExpr::sub(&mul_or, &signal, field);
+            constraints_and.push(AExpr::transform_expression_to_constraint_form(forced_signal_to_mul, field).unwrap());
 
              Ok((
-                mul_and,
-                vec![],
-                vec![]
+                signal,
+                constraints_and,
+                new_vars_name
             ))
         }
         BitOr => {
