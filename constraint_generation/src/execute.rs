@@ -4262,6 +4262,39 @@ fn reconstruct_binary_number(
 // ----------------------------
 
 
+fn equality_indicator(
+    runtime: &mut RuntimeInformation,
+    new_vars_name: &mut Vec<String>,
+    sub: AExpr, 
+) -> Result<(AExpr, Vec<Constraint>), String> { 
+    let mut constraints: Vec<Constraint> = vec![];
+    let field_copy = runtime.constants.get_p().clone();
+
+    let equal_aux_name = format!("equal_aux_{}", runtime.new_added_vars);
+    runtime.new_added_vars += 1;
+    let equal_aux = AExpr::Signal { symbol: equal_aux_name.clone() };
+    new_vars_name.push(equal_aux_name);
+
+    // 1. forced equal to binary: equal_aux * (1 - equal_aux) = 0
+    let one = AExpr::Number { value: BigInt::from(1) };
+    let term = AExpr::mul(&equal_aux, &AExpr::sub(&one, &equal_aux, &field_copy), &field_copy);
+    let constraint1 = AExpr::transform_expression_to_constraint_form(term, &field_copy).ok_or("bit constraint failed")?;
+    constraints.push(constraint1);
+
+    // 2. sub * equal_aux = 0
+    let mux = AExpr::mul(&sub, &equal_aux, &field_copy);
+    let constraint2 = AExpr::transform_expression_to_constraint_form(mux.clone(), &field_copy).ok_or("constraint 2 failed")?;
+    constraints.push(constraint2);
+
+    // 3. sub * equal_aux = 1 - equal_aux  => (sub * equal_aux) - (1 - equal_aux) = 0
+    let one_minus_equal = AExpr::sub(&one, &equal_aux, &field_copy);
+    let final_expr = AExpr::sub(&mux, &one_minus_equal, &field_copy);
+    let constraint3 = AExpr::transform_expression_to_constraint_form(final_expr, &field_copy).ok_or("constraint 3 failed")?;
+    constraints.push(constraint3);
+
+    Ok((equal_aux, constraints))
+}
+
 const MAX_BITS: usize = 253;
 fn execute_infix_op_autocomplete(
     meta: &Meta,
@@ -4909,30 +4942,16 @@ fn execute_infix_op_autocomplete(
             let mut constraints_eq = vec![];
             let mut new_vars_name =vec![];
 
-            // number a transformed to bits
-            let (a_signals, constraints_bit_a) = decimal_to_bits(l_value, n, &field, runtime, &mut new_vars_name);
-            constraints_eq.extend(constraints_bit_a);
 
-            // number b transform to bits
-            let (b_signals, constraints_bit_b) = decimal_to_bits(r_value, n, &field, runtime, &mut  new_vars_name);
-            constraints_eq.extend(constraints_bit_b);
-
-            // When we have both numbers in binary system, we will check every bit pair are equal. 
-
-            // If equal = 0, ten a == b
-            let (equal, xor_constraints) = match xor_function(n,&a_signals, &b_signals,runtime, &mut new_vars_name){
-                Ok(v) => v,
-                Err(_) => return Err(()), 
-            };
-            constraints_eq.extend(xor_constraints);
-
-
-            // 1 - equal = 0; if equal = 1, then 1=0 -> BAD; if equal = 0 (i mean, a == b), then 0 = 0 -> GOOD
-            let c_equal = AExpr::transform_expression_to_constraint_form(equal.clone(), field).unwrap();
+            let sub = AExpr::sub(l_value, r_value, field);
+            let c_equal = AExpr::transform_expression_to_constraint_form(sub.clone(), field).unwrap();
             constraints_eq.push(c_equal);
 
+            let (equal_signal, equal_constraints) = equality_indicator(runtime,&mut new_vars_name, sub).expect("Error al construir el gadget de igualdad");
+            constraints_eq.extend(equal_constraints);
+
             Ok((
-                equal,
+                equal_signal,
                 constraints_eq,
                 new_vars_name
             ))
@@ -4942,31 +4961,24 @@ fn execute_infix_op_autocomplete(
             let mut new_vars_name =vec![];
             let mut constraints_neq = vec![];
 
-            // number a transformed to bits
-            let (a_signals, constraints_bit_a) = decimal_to_bits(l_value, n, &field, runtime, &mut new_vars_name);
-            constraints_neq.extend(constraints_bit_a);
 
-            // number b transform to bits
-            let (b_signals, constraints_bit_b) = decimal_to_bits(r_value, n, &field, runtime, &mut  new_vars_name);
-            constraints_neq.extend(constraints_bit_b);
-
-            // When we have both numbers in binary system, we will check every bit pair are equal. 
-
-            // If equal = 1, ten a != b
-            let (equal, xor_constraints) = match xor_function(n,&a_signals, &b_signals,runtime, &mut new_vars_name){
-                Ok(v) => v,
-                Err(_) => return Err(()), 
-            };
-            constraints_neq.extend(xor_constraints);
+            let inv_aux_name = format!("inv_aux_{}", runtime.new_added_vars);
+            runtime.new_added_vars+=1;
+            let inv_aux = AExpr::Signal{symbol: inv_aux_name.clone()};
+            new_vars_name.push(inv_aux_name);
 
 
-            // 1 - equal = 0; if equal = 1, then 1-1=0 -> GOOD; if equal = 0 (i mean, a == b), then 1 -0 = 1 != 0 -> BAD
-            let force_equal_one = AExpr::sub(&AExpr::Number { value: BigInt::from(1)}, &equal, field);
-            let not_equal = AExpr::transform_expression_to_constraint_form(force_equal_one, field).unwrap();
-            constraints_neq.push(not_equal);
+            // sub * inv = 1 -> if sub != 0, then sub * 1/sub == 1 ; if sub == 0, 0 === 1 
+            let sub = AExpr::sub(l_value, r_value, field);
+            let mux_sub_inv = AExpr::mul(&sub, &inv_aux, field);
+            let sub_mux_sub = AExpr::sub(&AExpr::Number { value: BigInt::from(1) }, &mux_sub_inv, field);
+            constraints_neq.push(AExpr::transform_expression_to_constraint_form(sub_mux_sub, field).unwrap());
+
+            let (nequal_signal, nequal_constraints) = equality_indicator(runtime,&mut new_vars_name, sub).expect("Error al construir el gadget de no igualdad");
+            constraints_neq.extend(nequal_constraints);
 
             Ok((
-                equal,
+                nequal_signal,
                 constraints_neq,
                 new_vars_name
             ))
