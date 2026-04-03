@@ -4261,7 +4261,6 @@ fn reconstruct_binary_number(
 // operator for autocompelte function
 // ----------------------------
 
-
 fn equality_indicator(
     runtime: &mut RuntimeInformation,
     new_vars_name: &mut Vec<String>,
@@ -4275,22 +4274,23 @@ fn equality_indicator(
     let equal_aux = AExpr::Signal { symbol: equal_aux_name.clone() };
     new_vars_name.push(equal_aux_name);
 
-    // 1. forced equal to binary: equal_aux * (1 - equal_aux) = 0
-    let one = AExpr::Number { value: BigInt::from(1) };
-    let term = AExpr::mul(&equal_aux, &AExpr::sub(&one, &equal_aux, &field_copy), &field_copy);
-    let constraint1 = AExpr::transform_expression_to_constraint_form(term, &field_copy).ok_or("bit constraint failed")?;
+
+    let equal_inv_name = format!("inv_aux_{}", runtime.new_added_vars);
+    runtime.new_added_vars += 1;
+    let equal_inv = AExpr::Signal { symbol: equal_inv_name.clone() };
+    new_vars_name.push(equal_inv_name);
+
+    // 1. sub * equal_aux = 0 -> in1 != in2
+    let mux_sub_equalaux = AExpr::mul(&sub, &equal_aux, &field_copy);
+    let constraint1 = AExpr::transform_expression_to_constraint_form(mux_sub_equalaux, &field_copy).ok_or("constraint 1 failed")?;
     constraints.push(constraint1);
 
-    // 2. sub * equal_aux = 0
-    let mux = AExpr::mul(&sub, &equal_aux, &field_copy);
-    let constraint2 = AExpr::transform_expression_to_constraint_form(mux.clone(), &field_copy).ok_or("constraint 2 failed")?;
+    // 2. 1 - (sub * inv) = equal_aux -> in1 = in2
+    let mux_sub_inv = AExpr::mul(&sub, &equal_inv, &field_copy);
+    let one_minus_equal = AExpr::sub(&AExpr::Number { value: BigInt::from(1) }, &mux_sub_inv, &field_copy);
+    let sub_c2 = AExpr::sub(&one_minus_equal, &equal_aux, &field_copy);
+    let constraint2 = AExpr::transform_expression_to_constraint_form(sub_c2, &field_copy).ok_or("constraint 2 failed")?;
     constraints.push(constraint2);
-
-    // 3. sub * equal_aux = 1 - equal_aux  => (sub * equal_aux) - (1 - equal_aux) = 0
-    let one_minus_equal = AExpr::sub(&one, &equal_aux, &field_copy);
-    let final_expr = AExpr::sub(&mux, &one_minus_equal, &field_copy);
-    let constraint3 = AExpr::transform_expression_to_constraint_form(final_expr, &field_copy).ok_or("constraint 3 failed")?;
-    constraints.push(constraint3);
 
     Ok((equal_aux, constraints))
 }
@@ -4944,9 +4944,6 @@ fn execute_infix_op_autocomplete(
 
 
             let sub = AExpr::sub(l_value, r_value, field);
-            let c_equal = AExpr::transform_expression_to_constraint_form(sub.clone(), field).unwrap();
-            constraints_eq.push(c_equal);
-
             let (equal_signal, equal_constraints) = equality_indicator(runtime,&mut new_vars_name, sub).expect("Error al construir el gadget de igualdad");
             constraints_eq.extend(equal_constraints);
 
@@ -4957,23 +4954,11 @@ fn execute_infix_op_autocomplete(
             ))
         }
         NotEq => {
-            // Operator l_value != r_value | New Constraint: l_value - r_value > 0 -> Constraint --> MSB[l_value-r_value] = 0 
+            // Operator l_value != r_value | l_value - r_value != 0
             let mut new_vars_name =vec![];
             let mut constraints_neq = vec![];
 
-
-            let inv_aux_name = format!("inv_aux_{}", runtime.new_added_vars);
-            runtime.new_added_vars+=1;
-            let inv_aux = AExpr::Signal{symbol: inv_aux_name.clone()};
-            new_vars_name.push(inv_aux_name);
-
-
-            // sub * inv = 1 -> if sub != 0, then sub * 1/sub == 1 ; if sub == 0, 0 === 1 
             let sub = AExpr::sub(l_value, r_value, field);
-            let mux_sub_inv = AExpr::mul(&sub, &inv_aux, field);
-            let sub_mux_sub = AExpr::sub(&AExpr::Number { value: BigInt::from(1) }, &mux_sub_inv, field);
-            constraints_neq.push(AExpr::transform_expression_to_constraint_form(sub_mux_sub, field).unwrap());
-
             let (nequal_signal, nequal_constraints) = equality_indicator(runtime,&mut new_vars_name, sub).expect("Error al construir el gadget de no igualdad");
             constraints_neq.extend(nequal_constraints);
 
