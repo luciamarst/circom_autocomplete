@@ -470,7 +470,13 @@ fn execute_statement(
                         }
                     }
 
-                    let constrained = possible_constraint.unwrap();
+                    let constrained = match possible_constraint {
+                        Some(val) => val,
+                        None => {
+                            eprintln!("[Circom] Error: possible_constraint es None en asignación. Revisa la generación de restricciones previas.");
+                            return Err(());
+                        }
+                    };
 
                     let mut needs_double_arrow = Vec::new();
                     let mut must_single_arrow = Vec::new();
@@ -513,7 +519,13 @@ fn execute_statement(
                                 let p = runtime.constants.get_p().clone();
                                 let symbol = signal_left;
                                 let expr = AExpr::sub(&symbol, &value_right, &p);
-                                let ctr = AExpr::transform_expression_to_constraint_form(expr, &p).unwrap();
+                                let ctr = match AExpr::transform_expression_to_constraint_form(expr, &p) {
+                                    Some(c) => c,
+                                    None => {
+                                        eprintln!("[Circom] Error: transform_expression_to_constraint_form devolvió None");
+                                        return Err(());
+                                    }
+                                };
                                 ctr.print_pretty_constraint();
                                 node.add_constraint(ctr);
                             }
@@ -529,12 +541,24 @@ fn execute_statement(
                                 
                                 let ctr = match cond {
                                     None=>{
-                                        AExpr::transform_expression_to_constraint_form(expr, &p).unwrap()
+                                        match AExpr::transform_expression_to_constraint_form(expr, &p) {
+                                            Some(c) => c,
+                                            None => {
+                                                eprintln!("[Circom] Error: transform_expression_to_constraint_form devolvió None");
+                                                return Err(());
+                                            }
+                                        }
 
                                     },
                                     Some(cond)=>{
                                         let mul = AExpr::mul(&cond, &expr, &p);
-                                        AExpr::transform_expression_to_constraint_form(mul, &p).unwrap()
+                                        match AExpr::transform_expression_to_constraint_form(mul, &p) {
+                                            Some(c) => c,
+                                            None => {
+                                                eprintln!("[Circom] Error: transform_expression_to_constraint_form devolvió None");
+                                                return Err(());
+                                            }
+                                        }
                                     }
 
                                 };
@@ -1230,11 +1254,52 @@ fn execute_expression(
         }
         PrefixOp { prefix_op, rhe, .. } => {
             let folded_value = execute_expression(rhe, program_archive, runtime, flags)?;
-            let arithmetic_value =
+
+            let mut constraints: Vec<_> = match &folded_value.new_constraints {
+                Some(value) => value.clone(),
+                None=> vec![]
+            };
+
+            let mut signals=  match &folded_value.new_signals {
+                Some(value) => value.clone(),
+                None=> vec![]
+            };
+
+             let arithmetic_value =
                 safe_unwrap_to_single_arithmetic_expression(folded_value, line!());
-            let arithmetic_result = execute_prefix_op(*prefix_op, &arithmetic_value, runtime)?;
-            let slice_result = AExpressionSlice::new(&arithmetic_result);
-            FoldedValue { arithmetic_slice: Option::Some(slice_result), ..FoldedValue::default() }
+            
+            if(runtime.is_autocomplete){
+                
+       
+                let (result_value,mut result_constraints, mut result_signals) = execute_prefix_op_autocomplete(
+                   *prefix_op, &arithmetic_value, runtime
+                )?;
+
+                println!("Traduciendo expresion -> añadiendo constraints: ");
+                // for c in &result_constraints{
+                //     c.print_pretty_constraint();
+                // }
+                println!("-> Signals: ");
+                for c in &result_signals{
+                    println!("***{}", c);
+                }
+                constraints.extend(result_constraints);
+                signals.extend(result_signals);
+
+                let r_slice = AExpressionSlice::new(&result_value);
+                
+                FoldedValue { 
+                    arithmetic_slice: Option::Some(r_slice), 
+                    new_constraints: Option::Some(constraints),
+                    new_signals: Option::Some(signals),
+                    ..FoldedValue::default() 
+                }
+            }
+            else{
+                let arithmetic_result = execute_prefix_op(*prefix_op, &arithmetic_value, runtime)?;
+                let slice_result = AExpressionSlice::new(&arithmetic_result);
+                FoldedValue { arithmetic_slice: Option::Some(slice_result), ..FoldedValue::default() }
+            }
         }
         InlineSwitchOp { cond, if_true, if_false, .. } => {
             let f_cond = execute_expression(cond, program_archive, runtime, flags)?;
@@ -2624,7 +2689,7 @@ fn perform_assign(
     }
 }
 
-
+// TODO: CONDICIONAL
 // Evaluates the given condition and executes the corresponding statement. Returns a tuple (a,b) where a is the possible value returned and b is the value of the condition (in case the evaluation was successful)
 fn execute_conditional_statement(
     condition: &Expression,
@@ -2644,8 +2709,6 @@ fn execute_conditional_statement(
     }
     let ae_cond = safe_unwrap_to_single_arithmetic_expression(f_cond, line!());
     
-
-
     let possible_cond_bool_value =
         AExpr::get_boolean_equivalence(&ae_cond, runtime.constants.get_p());
 
@@ -4304,7 +4367,6 @@ fn execute_infix_op_autocomplete(
     r_value: &AExpr,
     runtime: &mut RuntimeInformation,
     
-    
 ) -> Result<(AExpr,Vec<Constraint>, Vec<String>), ()> {
     use ExpressionInfixOpcode::*;
     let field: &BigInt = &runtime.constants.get_p().clone();
@@ -5041,19 +5103,16 @@ fn execute_infix_op_autocomplete(
             ))
         }
         BitOr => {
-            //Operator l_value | r_value | New Constraint: a_binary[i] + b_binary[i] - a_binary[i] * b_binary[i] 
-            let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
-
+            // Operator l_value | r_value | New Constraint: a_binary[i] + b_binary[i] - a_binary[i] * b_binary[i]
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
-            
+
             // ================================= Convert number to bits =================================
             let (field_copy, l_value) = {
-                // Scope 
-                let field_copy = runtime.constants.get_p().clone(); 
-                let l_value = l_value.clone();                       
+                let field_copy = runtime.constants.get_p().clone();
+                let l_value = l_value.clone();
                 (field_copy, l_value)
-            }; 
+            };
 
             // l_value to bits
             let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, n, &field_copy, runtime, &mut new_vars_name);
@@ -5063,50 +5122,34 @@ fn execute_infix_op_autocomplete(
             let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(b_constraints_bit);
 
-            // Apply add bit to bit 
-            let mut aux_signals_add = vec![];
-            for i in 0..n{
-                let add_result_bit = AExpr::add(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
-                aux_signals_add.push(add_result_bit);
+            // Apply bitwise OR: a | b = a + b - a * b (bit a bit)
+            let mut or_bits = vec![];
+            for i in 0..n {
+                let add = AExpr::add(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
+                let mul = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
+                let or_bit = AExpr::sub(&add, &mul, &field_copy);
+                or_bits.push(or_bit);
             }
 
-            // Apply mul bit to bit 
-            let mut aux_signals_mul = vec![];
-            for i in 0..n{
-                let mul_result_bit = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
-                aux_signals_mul.push(mul_result_bit);
-            }
-
-            // Apply sub to add and mul signals
-            let mut aux_signals_sub = vec![];
-            for i in 0..n{
-                let sub_result_bit = AExpr::mul(&aux_signals_add[i], &aux_signals_mul[i], &field_copy);
-                aux_signals_sub.push(sub_result_bit);
-            }
-
-            let result = reconstruct_binary_number(&aux_signals_sub, n, field);
+            let result = reconstruct_binary_number(&or_bits, n, field);
 
             Ok((
                 result,
                 constraints,
                 new_vars_name,
             ))
-
         }
         BitAnd => {
-            //Operator l_value | r_value | New Constraint: a_binary[i] * b_binary[i] 
-            let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
-
+            // Operator l_value & r_value | New Constraint: a_binary[i] * b_binary[i]
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
-            
+
             // ================================= Convert number to bits =================================
             let (field_copy, l_value) = {
-                // Scope 
-                let field_copy = runtime.constants.get_p().clone(); 
-                let l_value = l_value.clone();                       
+                let field_copy = runtime.constants.get_p().clone();
+                let l_value = l_value.clone();
                 (field_copy, l_value)
-            }; 
+            };
 
             // l_value to bits
             let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, n, &field_copy, runtime, &mut new_vars_name);
@@ -5117,35 +5160,31 @@ fn execute_infix_op_autocomplete(
             constraints.extend(b_constraints_bit);
 
             // Apply & bit to bit
-            let mut aux_signals = vec![];
-            for i in 0..n{
+            let mut and_bits = vec![];
+            for i in 0..n {
                 let and_result_bit = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
-                aux_signals.push(and_result_bit);
+                and_bits.push(and_result_bit);
             }
 
-            let result = reconstruct_binary_number(&aux_signals, n, field);
+            let result = reconstruct_binary_number(&and_bits, n, field);
 
             Ok((
                 result,
                 constraints,
                 new_vars_name,
             ))
-
         }
         BitXor => {
-            //Operator l_value | r_value | New Constraint: 1 - (a_binary[i] + b_binary[i] - a_binary[i] * b_binary[i]) 
-            let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
-
+            // Operator l_value ^ r_value | New Constraint: XOR bit a bit
             let mut constraints = vec![];
             let mut new_vars_name = vec![];
-            
+
             // ================================= Convert number to bits =================================
             let (field_copy, l_value) = {
-                // Scope 
-                let field_copy = runtime.constants.get_p().clone(); 
-                let l_value = l_value.clone();                       
+                let field_copy = runtime.constants.get_p().clone();
+                let l_value = l_value.clone();
                 (field_copy, l_value)
-            }; 
+            };
 
             // l_value to bits
             let (a_bits_signals, a_constraints_bit) = decimal_to_bits(&l_value, n, &field_copy, runtime, &mut new_vars_name);
@@ -5155,42 +5194,23 @@ fn execute_infix_op_autocomplete(
             let (b_bits_signals, b_constraints_bit) = decimal_to_bits(&r_value, n, &field_copy, runtime, &mut new_vars_name);
             constraints.extend(b_constraints_bit);
 
-            // Apply add bit to bit 
-            let mut aux_signals_add = vec![];
-            for i in 0..n{
-                let add_result_bit = AExpr::add(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
-                aux_signals_add.push(add_result_bit);
+            // Apply XOR bit a bit: a ^ b = a + b - 2ab
+            let mut xor_bits = vec![];
+            for i in 0..n {
+                let add = AExpr::add(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
+                let mul = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
+                let double_mul = AExpr::mul(&AExpr::Number { value: BigInt::from(2) }, &mul, &field_copy);
+                let xor_bit = AExpr::sub(&add, &double_mul, &field_copy);
+                xor_bits.push(xor_bit);
             }
 
-            // Apply mul bit to bit 
-            let mut aux_signals_mul = vec![];
-            for i in 0..n{
-                let mul_result_bit = AExpr::mul(&a_bits_signals[i], &b_bits_signals[i], &field_copy);
-                aux_signals_mul.push(mul_result_bit);
-            }
-
-            // Apply sub to add and mul signals
-            let mut aux_signals_sub = vec![];
-            for i in 0..n{
-                let sub_result_bit = AExpr::mul(&aux_signals_add[i], &aux_signals_mul[i], &field_copy);
-                aux_signals_sub.push(sub_result_bit);
-            }
-
-            // Apply 1 - aux_signals_sub[i]
-            let mut aux_signals_reverse = vec![];
-            for i in 0..n{
-                let reverse_result_bit = AExpr::mul(&AExpr::Number { value: BigInt::from(1) }, &aux_signals_sub[i], &field_copy);
-                aux_signals_reverse.push(reverse_result_bit);
-            }
-
-            let result = reconstruct_binary_number(&aux_signals_reverse, n, field);
+            let result = reconstruct_binary_number(&xor_bits, n, field);
 
             Ok((
                 result,
                 constraints,
                 new_vars_name,
             ))
-
         }
         
      };
@@ -5219,6 +5239,37 @@ fn execute_prefix_op(
     Result::Ok(result)
 }
 
+fn execute_prefix_op_autocomplete(
+    prefix_op: ExpressionPrefixOpcode,
+    value: &AExpr,
+    runtime: &mut RuntimeInformation,
+    
+) -> Result<(AExpr,Vec<Constraint>, Vec<String>), ()>  {
+    use ExpressionPrefixOpcode::*;
+    let field = runtime.constants.get_p().clone();
+    let result = match prefix_op {
+        BoolNot => {
+             //Operator l_value or r_value | New Constraint: 1 - value
+            let mut new_vars_name =vec![];
+            let mut constraints = vec![];
+
+             let (value_signals, value_constraints) = decimal_to_bits(value, 1, &field, runtime, &mut new_vars_name);
+            constraints.extend(value_constraints);
+
+            let result = AExpr::sub(&AExpr::Number { value: BigInt::from(1)}, &value_signals[0], &field);
+
+             Ok((
+                result,
+                constraints,
+                new_vars_name,
+            ))
+        },
+        Sub => {return Err(());},
+        Complement => {return Err(());}    
+    };
+    
+    result
+}
 //************************************************* Indexing support *************************************************
 
 /*
