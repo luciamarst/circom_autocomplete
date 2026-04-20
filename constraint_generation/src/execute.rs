@@ -3990,66 +3990,36 @@ fn secure_less_than_eq(
 ) -> Result<(AExpr, Vec<Constraint>), ()> {
     let mut constraints: Vec<Constraint> = vec![];
 
-    // ================================= Convert numbers to bits =================================
+    // ================================= Convert numbers to bits to check their size =================================
     let field_copy = runtime.constants.get_p().clone();
 
-    let (a_signals, constraints_bit_a) = decimal_to_bits(l_value, N, &field_copy, runtime, new_vars_name);
+    let (_a_signals, constraints_bit_a) = decimal_to_bits(l_value, N, &field_copy, runtime, new_vars_name);
     constraints.extend(constraints_bit_a);
 
-    let (b_signals, constraints_bit_b) = decimal_to_bits(r_value, N, &field_copy, runtime, new_vars_name);
+    let (_b_signals, constraints_bit_b) = decimal_to_bits(r_value, N, &field_copy, runtime, new_vars_name);
     constraints.extend(constraints_bit_b);
 
-    // ================================= Prepare input signals for bin_sum =================================
-    let mut input_signals: Vec<Vec<AExpr>> = Vec::with_capacity(3); // For A, B and third for CARRY
+    // ================================= Compute 2**n+1 - a + b =================================
 
-    for _ in 0..2 {
-        let mut number_signals: Vec<AExpr> = Vec::with_capacity(N+1);
-        for _ in 0..N+1 {
-            let signal_name = format!("less_than_signal_{}", runtime.new_added_vars);
-            runtime.new_added_vars += 1;
+     // Create new auxliar signal to store this value
+    let value_name = format!("value_diff_{}", runtime.new_added_vars);
+    runtime.new_added_vars += 1;
+    new_vars_name.push(value_name.clone());
 
-            let signal = AExpr::Signal { symbol: signal_name.clone() };
-            new_vars_name.push(signal_name);
+    let expr_left = AExpr::Signal { symbol: value_name.clone() };
+    let mut expr_right = AExpr::Number{value: BigInt::from(2 << (N-1))};
 
-            number_signals.push(signal);
-        }
-        
-        input_signals.push(number_signals);
-    }
+    expr_right = AExpr::sub(&expr_right, l_value, &field_copy);
+    expr_right = AExpr::add(&expr_right, r_value, &field_copy);
+    
+    let final_expr = AExpr::sub(&expr_left, &expr_right, &field_copy);
+    let eq_final_c = AExpr::transform_expression_to_constraint_form(final_expr, &field_copy).unwrap();
+    constraints.push(eq_final_c);
 
-    let mut plus_one_vector: Vec<AExpr> = Vec::with_capacity(N + 1);
-    plus_one_vector.push(AExpr::Number { value: BigInt::from(1) }); // LSB == 1
+    // ================================= Transform the result of the addition to bits =================================
 
-    for _ in 1..N + 1 {
-        plus_one_vector.push(AExpr::Number { value: BigInt::from(0) }); 
-    }
-    input_signals.push(plus_one_vector);
-
-    // We force input_signals to have the inverted binary value of vector A (Not A) and vector B
-    for i in 0..N {
-
-        // Apply NOT A
-        let eq_a = AExpr::sub(
-            &input_signals[0][i], 
-            &AExpr::sub(&AExpr::Number{value:BigInt::from(1)}, &a_signals[i], &field_copy), 
-            &field_copy);
-
-
-        let eq_b = AExpr::sub(&input_signals[1][i], &b_signals[i], &field_copy);
-
-        let c_a = AExpr::transform_expression_to_constraint_form(eq_a, &field_copy).unwrap();
-        let c_b = AExpr::transform_expression_to_constraint_form(eq_b, &field_copy).unwrap();
-
-        constraints.push(c_a);
-        constraints.push(c_b);
-    }
-
-    // ================================= Sum the inputs with bin_sum =================================
-    let number = AExpr::Number { value: BigInt::from(3) };
-    let ops = get_constant_usize(&number).expect("Shift amount must be a constant usize");
-
-    let (add_constraints, constraints_add) = bin_sum(&input_signals, N+1, ops, &field_copy, runtime, new_vars_name).map_err(|_| ())?;
-    constraints.extend(constraints_add);
+    let (value_signals, value_constraints) = decimal_to_bits(&expr_left, N+1, &field_copy, runtime, new_vars_name);
+    constraints.extend(value_constraints);
 
 
     /* ==================== Explanation of the verification ====================
@@ -4061,7 +4031,7 @@ fn secure_less_than_eq(
         The following expressions combine the above:
      */
 
-    let output = add_constraints[N].clone();
+    let output = value_signals[N].clone();
 
     Ok((output, constraints))
 }
@@ -4910,12 +4880,6 @@ fn execute_infix_op_autocomplete(
                 Err(_) => return Err(()), 
             };
            constraints.extend(constraints_lesserEq);
-
-
-            let field_copy = runtime.constants.get_p().clone(); 
-            let eq = AExpr::sub(&output, &AExpr::Number{value:BigInt::from(1)}, &field_copy);
-            let c_eq = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
-            constraints.push(c_eq);
             
             Ok((
                 output,
