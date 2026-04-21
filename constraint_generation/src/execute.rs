@@ -4901,14 +4901,8 @@ fn execute_infix_op_autocomplete(
             };
            constraints.extend(constraints_lesser_eq);
 
-            let eq = AExpr::sub(&output_aux,&AExpr::Number { value: BigInt::from(1) }, &field_copy);
-            let c_out = AExpr::transform_expression_to_constraint_form(eq,&field_copy).unwrap();
-            constraints.push(c_out);
-
-            let output_greaterEq = AExpr::sub(&output_aux,&AExpr::Number{value: BigInt::from(0)}, &field_copy);
-
             Ok((
-                output_greaterEq,
+                output_aux,
                 constraints,
                 new_vars_name
             ))
@@ -4925,11 +4919,6 @@ fn execute_infix_op_autocomplete(
             constraints.extend(constraints_lesser);
 
             let field_copy = runtime.constants.get_p().clone();
-
-            // returns 0 if r_value > l_value --> l_value < r_value
-            let c_out = AExpr::transform_expression_to_constraint_form(output.clone(),&field_copy).unwrap();
-            constraints.push(c_out);
-
             let output_lesser = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &output, &field_copy);
 
             Ok((
@@ -4949,11 +4938,6 @@ fn execute_infix_op_autocomplete(
                 Err(_) => return Err(()), 
             };
             constraints.extend(constraints_lesserEq);
-
-
-            // secure_less_than_eq returns 0 when l_value < r_value. Then if output_aux is 0 is fulfilled
-            let c_out = AExpr::transform_expression_to_constraint_form(output_aux.clone(),&field_copy).unwrap();
-            constraints.push(c_out);
 
             let output_greater = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &output_aux, &field_copy);
 
