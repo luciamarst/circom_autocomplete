@@ -4744,7 +4744,7 @@ fn execute_infix_op_autocomplete(
                 new_vars_name
             ))
         }
-        ShiftL =>{
+        ShiftR =>{
             let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
             assert!(k <= n, "Shift exceeds bit width");
 
@@ -4802,7 +4802,7 @@ fn execute_infix_op_autocomplete(
                 new_vars_name
             ))
         }
-        ShiftR =>{
+        ShiftL =>{
             // Operation: decimal_number >> displacement 
             // N is the number of bits of the decimal_number transformed to binary
             let k = get_constant_usize(r_value).expect("Shift amount must be a constant usize"); // displacement
@@ -4838,16 +4838,17 @@ fn execute_infix_op_autocomplete(
                 new_vars_name.push(shift_signal_name);
             }
             
-            // Fill the remaining (least significant) part with shifted zeros
-            for i in 0..k{
-                let eq = AExpr::sub(&s_signals[i], &AExpr::Number{value: BigInt::from(0)},&field_copy);
+
+            // Fill in the displaced part
+            for i in k..n{
+                let eq = AExpr::sub(&s_signals[i], &b_signals[i-k], &field_copy);
                 let c = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
                 constraints.push(c);
             }
-
-            // Fill in the displaced part
-            for i in 0..(n-k){
-                let eq = AExpr::sub(&s_signals[i+k], &b_signals[i], &field_copy);
+            
+            // Fill the remaining (least significant) part with shifted zeros
+            for i in 0..k{
+                let eq = AExpr::sub(&s_signals[i], &AExpr::Number{value: BigInt::from(0)},&field_copy);
                 let c = AExpr::transform_expression_to_constraint_form(eq, &field_copy).unwrap();
                 constraints.push(c);
             }
