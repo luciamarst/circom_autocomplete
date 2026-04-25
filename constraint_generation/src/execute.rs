@@ -5035,18 +5035,11 @@ fn execute_infix_op_autocomplete(
             let constraint_b = AExpr::transform_expression_to_constraint_form(term_b, field).expect("bit constraint failed");
             constraints_and.push(constraint_b);
 
-            //2. Once checked, apply the OR operation
-            let signal_name = format!("or_signal_mul_{}", runtime.new_added_vars);
-            runtime.new_added_vars += 1;
-            let signal = AExpr::Signal { symbol: signal_name.clone() };
-            new_vars_name.push(signal_name);
-
+    
             let mul_or = AExpr::mul(l_value, r_value, field);
-            let forced_signal_to_mul = AExpr::sub(&mul_or, &signal, field);
-            constraints_and.push(AExpr::transform_expression_to_constraint_form(forced_signal_to_mul, field).unwrap());
-
+  
              Ok((
-                signal,
+                mul_or,
                 constraints_and,
                 new_vars_name
             ))
