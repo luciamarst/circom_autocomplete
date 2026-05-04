@@ -2770,6 +2770,7 @@ fn execute_conditional_statement(
             
             match &previous_conditional_expression{
                 None=>{
+                    expr_signal = ae_cond.clone();
                     runtime.conditional_expression = Some(ae_cond);
                 },
                 Some(cond)=>{
@@ -2786,12 +2787,16 @@ fn execute_conditional_statement(
                         (actual_node),
                     );
                     runtime.new_added_vars += 1;
+
                     
                     expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
-                    let expr_new_constraint = AExpr::sub(&cond_mul, &expr_signal, field);
-                    let new_constraint = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
                     
+                    let expr_new_constraint: ArithmeticExpressionGen<String> = AExpr::sub(&cond_mul, &expr_signal, field);
+                    let new_constraint: circom_algebra::algebra::Constraint<String> = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
                     actual_node.as_mut().unwrap().add_constraint(new_constraint);
+
+                    runtime.conditional_expression = Some(expr_signal.clone());
+
                 }
             }
         }
@@ -2806,7 +2811,7 @@ fn execute_conditional_statement(
 
             if runtime.is_autocomplete{
                 let field: &BigInt = &runtime.constants.get_p().clone();
-                let cond_sub: ArithmeticExpressionGen<String> = AExpr::mul(&AExpr::Number{value: BigInt::from(1)}, &expr_signal, field);
+                let cond_sub: ArithmeticExpressionGen<String> = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &expr_signal, field);
                 runtime.conditional_expression = Some(cond_sub);
             }
             let (else_ret, can_simplify_else) = execute_statement(else_stmt, program_archive, runtime, actual_node, flags)?;
