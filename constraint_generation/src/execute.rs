@@ -2700,6 +2700,7 @@ fn execute_conditional_statement(
     actual_node: &mut Option<ExecutedTemplate>,
     flags: FlagsExecution,
 ) -> Result<(Option<FoldedValue>, bool, Option<bool>), ()> {
+    use std::fmt::Display;
     let f_cond = execute_expression(condition, program_archive, runtime, flags)?;
     let mut constraints = vec![];
     let mut signals = vec![];
@@ -2770,14 +2771,18 @@ fn execute_conditional_statement(
             
             match &previous_conditional_expression{
                 None=>{
-                    expr_signal = ae_cond.clone();
-                    runtime.conditional_expression = Some(ae_cond);
+                    runtime.conditional_expression = Some(ae_cond.clone());
                 },
                 Some(cond)=>{
-                    let cond_mul: ArithmeticExpressionGen<String> = AExpr::mul(previous_conditional_expression.as_ref().unwrap(), &cond, field);
-                    let new_signal = format!("newaux_{}", runtime.new_added_vars);
+                    // We multiply the previous condition with the new one and this is the new cond
+                    //println!("{:?}", cond.to_string());
+                    //println!("{:?}", ae_cond.to_string());
+
+
+                    let cond_mul: ArithmeticExpressionGen<String> = AExpr::mul(cond, &ae_cond, field);
+                    let new_signal = format!("newaux_if_{}", runtime.new_added_vars);
                     let vec_empty = vec![];
-                    let vec_empty2 = vec![];
+                    let vec_empty2: Vec<String> = vec![];
                     execute_signal_declaration(
                         &new_signal,
                         &vec_empty,
@@ -2788,7 +2793,7 @@ fn execute_conditional_statement(
                     );
                     runtime.new_added_vars += 1;
 
-                    
+                    //println!("{:?}", cond_mul.to_string());
                     expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
                     
                     let expr_new_constraint: ArithmeticExpressionGen<String> = AExpr::sub(&cond_mul, &expr_signal, field);
@@ -2804,15 +2809,50 @@ fn execute_conditional_statement(
     
         
         if let Option::Some(else_stmt) = false_case {
+
             // Update the conditions state and set the last to false
             let index = runtime.conditions_state.len()-1;
             runtime.conditions_state[index].1 = false;
             
 
             if runtime.is_autocomplete{
+                // We compute the else case: 
+                // In case there was not a previous condition we use 1 - ae_cond
+                // If there was a condition then we need is previous_condition * (1 - ae_cond)
+
                 let field: &BigInt = &runtime.constants.get_p().clone();
-                let cond_sub: ArithmeticExpressionGen<String> = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &expr_signal, field);
-                runtime.conditional_expression = Some(cond_sub);
+                let cond_sub: ArithmeticExpressionGen<String> = AExpr::sub(&AExpr::Number{value: BigInt::from(1)}, &ae_cond, field);
+
+                match &previous_conditional_expression{
+                    None =>{
+                        runtime.conditional_expression = Some(cond_sub);
+                    },
+                    Some(cond) =>{
+                        let cond_mul: ArithmeticExpressionGen<String> = AExpr::mul(cond, &cond_sub, field);
+                        let new_signal = format!("newaux_else_{}", runtime.new_added_vars);
+                        let vec_empty = vec![];
+                        let vec_empty2: Vec<String> = vec![];
+                        execute_signal_declaration(
+                            &new_signal,
+                            &vec_empty,
+                            &vec_empty2,
+                            SignalType::Intermediate,
+                            &mut runtime.environment,
+                            (actual_node),
+                        );
+                        runtime.new_added_vars += 1;
+
+                        //println!("{:?}", cond_mul.to_string());
+                        expr_signal = AExpr::Signal { symbol: new_signal.clone() }; //CLONAR LA SEÑAL PARA QUE FUNCIONE
+                        
+                        let expr_new_constraint: ArithmeticExpressionGen<String> = AExpr::sub(&cond_mul, &expr_signal, field);
+                        let new_constraint: circom_algebra::algebra::Constraint<String> = AExpr::transform_expression_to_constraint_form(expr_new_constraint, field).expect("La transformación a constraint falló");
+                        actual_node.as_mut().unwrap().add_constraint(new_constraint);
+
+                        runtime.conditional_expression = Some(expr_signal.clone());
+                    }
+                }
+                
             }
             let (else_ret, can_simplify_else) = execute_statement(else_stmt, program_archive, runtime, actual_node, flags)?;
             can_simplify &= can_simplify_else;
