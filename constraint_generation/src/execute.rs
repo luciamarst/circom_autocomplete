@@ -2831,6 +2831,7 @@ fn execute_conditional_statement(
                         let cond_mul: ArithmeticExpressionGen<String> = AExpr::mul(cond, &cond_sub, field);
                         let new_signal = format!("newaux_else_{}", runtime.new_added_vars);
                         let vec_empty = vec![];
+                        
                         let vec_empty2: Vec<String> = vec![];
                         execute_signal_declaration(
                             &new_signal,
@@ -4358,18 +4359,20 @@ fn equality_indicator(
     let equal_inv = AExpr::Signal { symbol: equal_inv_name.clone() };
     new_vars_name.push(equal_inv_name);
 
-    // 1. sub * equal_aux = 0 -> in1 != in2
+
+    // 1. (a-b) * equal_aux = 0 -> in1 != in2
     let mux_sub_equalaux = AExpr::mul(&sub, &equal_aux, &field_copy);
     let constraint1 = AExpr::transform_expression_to_constraint_form(mux_sub_equalaux, &field_copy).ok_or("constraint 1 failed")?;
     constraints.push(constraint1);
 
-    // 2. 1 - (sub * inv) = equal_aux -> in1 = in2
+    // 2. 1 - ((a-b) * inv) = equal_aux -> in1 = in2
     let mux_sub_inv = AExpr::mul(&sub, &equal_inv, &field_copy);
     let one_minus_equal = AExpr::sub(&AExpr::Number { value: BigInt::from(1) }, &mux_sub_inv, &field_copy);
     let sub_c2 = AExpr::sub(&one_minus_equal, &equal_aux, &field_copy);
     let constraint2 = AExpr::transform_expression_to_constraint_form(sub_c2, &field_copy).ok_or("constraint 2 failed")?;
     constraints.push(constraint2);
 
+    
     Ok((equal_aux, constraints))
 }
 
@@ -5000,7 +5003,7 @@ fn execute_infix_op_autocomplete(
 
 
             let sub = AExpr::sub(l_value, r_value, field);
-            let (equal_signal, equal_constraints) = equality_indicator(runtime,&mut new_vars_name, sub).expect("Error al construir el gadget de igualdad");
+            let (equal_signal, equal_constraints) = equality_indicator(runtime,&mut new_vars_name, sub).expect("Equality indicator has failed. Check line 5003");
             constraints_eq.extend(equal_constraints);
 
             Ok((
@@ -5032,32 +5035,36 @@ fn execute_infix_op_autocomplete(
             //1. Check that a and b inputs are binary (0 or 1)
             let one = AExpr::Number { value: BigInt::from(1) };
             
-            // Check that A is a boolean value: l_value * (1 - l_value) = 0
+            //1.1 Check that A is a boolean value: l_value * (1 - l_value) = 0
             let term_a = AExpr::mul(l_value, &AExpr::sub(&one, l_value, field), field);
             let constraint_a = AExpr::transform_expression_to_constraint_form(term_a, field).expect("bit constraint failed");
             constraints_or.push(constraint_a);
 
-            // Check that A is a boolean value: r_value * (1 - r_value) = 0
+            //1.2 Check that B is a boolean value: r_value * (1 - r_value) = 0
             let term_b = AExpr::mul(r_value, &AExpr::sub(&one, r_value, field), field);
             let constraint_b = AExpr::transform_expression_to_constraint_form(term_b, field).expect("bit constraint failed");
             constraints_or.push(constraint_b);
 
             //2. Once checked, apply the OR operation
+       
+            // a + b - a * b = signal -> signal - (a + b - a * b) = 0
+            let add_or = AExpr::add(l_value, r_value, field); //a+b
+            let mul_or = AExpr::mul(l_value, r_value, field); // a*b
+            let sub_or  = AExpr::sub(&add_or, &mul_or, field); // a+b - a*b
+
+
+            // A new signal is added to ensures that the expresion is non quadratic and then, it is reliable. Then, we need to force: signal = a + b - a * b -> signal-(a+b - a*b) = 0
             let signal_name = format!("or_signal_mul_{}", runtime.new_added_vars);
             runtime.new_added_vars += 1;
             let signal = AExpr::Signal { symbol: signal_name.clone() };
             new_vars_name.push(signal_name);
 
-            let add_or = AExpr::add(l_value, r_value, field);
+            // (a + b - a * b)- signal = 0 
+            let forced_signal_to_mul = AExpr::sub(&sub_or, &signal, field);
+            constraints_or.push(AExpr::transform_expression_to_constraint_form(forced_signal_to_mul, field).expect("Or operator has failed. Check line 5062"));
 
-            let mul_or = AExpr::mul(l_value, r_value, field);
-            let forced_signal_to_mul = AExpr::sub(&mul_or, &signal, field);
-            constraints_or.push(AExpr::transform_expression_to_constraint_form(forced_signal_to_mul, field).unwrap());
-
-            let result = AExpr::sub(&add_or, &signal, field);
-      
              Ok((
-                result,
+                signal,
                 constraints_or,
                 new_vars_name
             ))
@@ -5075,16 +5082,28 @@ fn execute_infix_op_autocomplete(
             let constraint_a = AExpr::transform_expression_to_constraint_form(term_a, field).expect("bit constraint failed");
             constraints_and.push(constraint_a);
 
-            // Check that A is a boolean value: r_value * (1 - r_value) = 0
+            // Check that B is a boolean value: r_value * (1 - r_value) = 0
             let term_b = AExpr::mul(r_value, &AExpr::sub(&one, r_value, field), field);
             let constraint_b = AExpr::transform_expression_to_constraint_form(term_b, field).expect("bit constraint failed");
             constraints_and.push(constraint_b);
 
-    
+            
+            // a*b
             let mul_or = AExpr::mul(l_value, r_value, field);
+
+
+             // A new signal is added to ensures that the expresion is non quadratic and then, it is reliable. Then, we need to force: signal = a + b - a * b -> signal-(a+b - a*b) = 0
+            let signal_name = format!("or_signal_mul_{}", runtime.new_added_vars);
+            runtime.new_added_vars += 1;
+            let signal = AExpr::Signal { symbol: signal_name.clone() };
+            new_vars_name.push(signal_name);
+
+            // a * b - signal = 0 
+            let forced_signal_to_mul = AExpr::sub(&mul_or, &signal, field);
+            constraints_and.push(AExpr::transform_expression_to_constraint_form(forced_signal_to_mul, field).expect("And operator has failed. Check line 5101"));
   
              Ok((
-                mul_or,
+                signal,
                 constraints_and,
                 new_vars_name
             ))
